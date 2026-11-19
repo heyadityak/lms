@@ -1,0 +1,167 @@
+# Dev stack (SYSTEM_DESIGN §3). One-off: docker compose run --rm app php artisan migrate --force
+x-app: &app
+  build:
+    context: .
+    target: app-dev
+    args:
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+  image: lms-app-dev
+  # No env_file: Laravel reads the bind-mounted .env itself, so phpunit.xml can override it
+  # (real env vars land in $_SERVER and would beat phpunit's <env>). Prod injects real env vars.
+  volumes:
+    - ./:/var/www/html
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    s3-init:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  nginx:
+    build:
+      context: .
+      target: nginx
+    image: lms-nginx-dev
+    environment:
+      PHP_FPM_HOST: app:9000
+    volumes:
+      - ./public:/var/www/html/public:ro
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  app:
+    <<: *app
+
+  worker:
+    <<: *app
+    command: ["php", "artisan", "queue:work", "--tries=3", "--backoff=10", "--max-time=3600"]
+    healthcheck:
+      disable: true
+
+  scheduler:
+    <<: *app
+    command: ["php", "artisan", "schedule:work"]
+    healthcheck:
+      disable: true
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-lms}
+      POSTGRES_USER: ${DB_USERNAME:-lms}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${DB_FORWARD_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # S3-compatible object store (dev parity for BRANDING_DISK/FILESYSTEM_DISK=s3)
+  rustfs:
+    image: rustfs/rustfs:1.0.3
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lmsdev}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lmsdevsecret}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - s3data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # One-off, idempotent bucket bootstrap
+  s3-init:
+    image: amazon/aws-cli:2.39.4
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-lmsdev}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-lmsdevsecret}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      BUCKET: ${AWS_BUCKET:-lms}
+    entrypoint: ["sh", "-c"]
+    command:
+      - aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket "$$BUCKET" 2>/dev/null || aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket "$$BUCKET"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
+  # Identity provider + role authority. Dev: single node, start-dev, realm imported (incl. DEV ONLY users).
+  # Prod: docker/keycloak/Dockerfile (`start --optimized`), clustered (see SYSTEM_DESIGN).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${DB_USERNAME:-lms}
+      KC_DB_PASSWORD: ${DB_PASSWORD:-secret}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./docker/keycloak/realm-lms.json:/opt/keycloak/data/import/realm-lms.json:ro
+    ports:
+      - "${KEYCLOAK_FORWARD_PORT:-8081}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  s3data:

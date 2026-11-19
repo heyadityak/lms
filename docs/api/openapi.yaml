@@ -1,0 +1,2410 @@
+openapi: 3.1.0
+info:
+  title: Leave Management System API
+  version: 1.0.0
+  summary: White-label, single-tenant leave management REST API.
+  description: |
+    Contract-first API (decision D-21). **This file is the source of truth**; see
+    `docs/API_GUIDELINES.md` for conventions.
+
+    * Every `/api/v1` operation requires the `api` module (404 problem when off).
+    * Authentication: Keycloak OIDC Bearer JWT (decision D-20). Tokens are obtained
+      from Keycloak (client `lms-api-cli`, auth code + PKCE), never from this API.
+    * `x-roles` lists the Keycloak realm roles allowed to call an operation at all.
+      Resource-level rules (direct manager, not own request) are Laravel Policies and
+      yield 403.
+    * Envelope `{data, meta, links}`; errors are RFC 9457 `application/problem+json`
+      with a stable `code`.
+    * All ids are ULIDs (`public_id` column). Dates are ISO-8601.
+    * `x-module` marks operations that also need a feature module (`holidays`, `reports`,
+      `user_management`). `/admin/users` writes to Keycloak through its Admin API (D-22).
+  contact:
+    name: LMS architecture
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: '{baseUrl}/api/v1'
+    description: One deployment per customer.
+    variables:
+      baseUrl:
+        default: http://localhost:8080
+        description: The deployment's APP_URL.
+security:
+  - keycloak: []
+tags:
+  - name: Me
+    description: The authenticated caller.
+  - name: Leave requests
+    description: Apply, view and transition leave requests.
+  - name: Approvals
+    description: Manager / HR approval inbox and decisions.
+  - name: Leave types
+    description: Leave type catalogue (CL, SL, EL, LWP, ...).
+  - name: Holidays
+    description: Requires the `holidays` module.
+  - name: Users
+    description: LMS-owned user fields (department, manager, joining date, active flag).
+  - name: Identity admin
+    description: Keycloak-backed user administration. Requires the `user_management` module (D-22).
+  - name: Balances
+    description: Ledger-derived balances and ledger history.
+  - name: Departments
+    description: Organisational departments.
+  - name: Settings
+    description: Branding and modules (white-label).
+  - name: Reports
+    description: Requires the `reports` module.
+  - name: Health
+    description: Outside `/api/v1`, no authentication, no envelope.
+
+paths:
+  /me:
+    get:
+      tags: [Me]
+      operationId: getMe
+      summary: Current user
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: The caller.
+          headers:
+            X-RateLimit-Limit: {$ref: '#/components/headers/X-RateLimit-Limit'}
+            X-RateLimit-Remaining: {$ref: '#/components/headers/X-RateLimit-Remaining'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserEnvelope'}
+              examples:
+                alice: {$ref: '#/components/examples/UserAlice'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /me/balances:
+    get:
+      tags: [Me, Balances]
+      operationId: listMyBalances
+      summary: My balances per leave type for a leave year
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterYear'
+      responses:
+        '200': {$ref: '#/components/responses/BalanceList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /me/leave-requests:
+    get:
+      tags: [Me, Leave requests]
+      operationId: listMyLeaveRequests
+      summary: My leave requests
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterStatus'
+        - $ref: '#/components/parameters/FilterYear'
+        - $ref: '#/components/parameters/FilterFrom'
+        - $ref: '#/components/parameters/FilterTo'
+        - $ref: '#/components/parameters/SortLeaveRequests'
+        - $ref: '#/components/parameters/IncludeLeaveRequest'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': {$ref: '#/components/responses/LeaveRequestList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /me/ledger-entries:
+    get:
+      tags: [Me, Balances]
+      operationId: listMyLedgerEntries
+      summary: My ledger entries (append-only balance history)
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterYear'
+        - $ref: '#/components/parameters/FilterLeaveType'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': {$ref: '#/components/responses/LedgerEntryList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests:
+    get:
+      tags: [Leave requests]
+      operationId: listLeaveRequests
+      summary: Leave requests visible to the caller
+      description: Employee sees own; manager sees own and direct reports'; hr_admin sees all.
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterStatus'
+        - $ref: '#/components/parameters/FilterYear'
+        - $ref: '#/components/parameters/FilterFrom'
+        - $ref: '#/components/parameters/FilterTo'
+        - $ref: '#/components/parameters/FilterUser'
+        - $ref: '#/components/parameters/FilterLeaveType'
+        - $ref: '#/components/parameters/FilterDepartment'
+        - $ref: '#/components/parameters/SortLeaveRequests'
+        - $ref: '#/components/parameters/IncludeLeaveRequest'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': {$ref: '#/components/responses/LeaveRequestList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Leave requests]
+      operationId: createLeaveRequest
+      summary: Apply for leave
+      description: |
+        Runs validation V1–V9 (USE_CASES §3.4). `days` is computed by the server.
+        Supports `Idempotency-Key` (Redis, 24 h): a retry with the same key and body
+        replays the original response with `Idempotent-Replayed: true`.
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LeaveRequestCreate'}
+            examples:
+                earnedLeave: {$ref: '#/components/examples/LeaveRequestCreateEL'}
+      responses:
+        '201':
+          description: Created, status `pending`.
+          headers:
+            Location:
+              description: URL of the new request.
+              schema: {type: string, format: uri}
+            Idempotent-Replayed: {$ref: '#/components/headers/Idempotent-Replayed'}
+            X-RateLimit-Limit: {$ref: '#/components/headers/X-RateLimit-Limit'}
+            X-RateLimit-Remaining: {$ref: '#/components/headers/X-RateLimit-Remaining'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LeaveRequestEnvelope'}
+              examples:
+                pending: {$ref: '#/components/examples/LeaveRequestPending'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/LeaveRuleViolation'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests/{leaveRequestId}:
+    parameters:
+      - $ref: '#/components/parameters/LeaveRequestId'
+    get:
+      tags: [Leave requests]
+      operationId: getLeaveRequest
+      summary: Leave request detail
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/IncludeLeaveRequest'
+      responses:
+        '200':
+          description: The request.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LeaveRequestEnvelope'}
+              examples:
+                approvedWithActions: {$ref: '#/components/examples/LeaveRequestApproved'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests/{leaveRequestId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/LeaveRequestId'
+    post:
+      tags: [Leave requests, Approvals]
+      operationId: approveLeaveRequest
+      summary: Approve a pending request
+      description: Re-checks overlap and balance, writes a `debit` ledger entry when the type tracks balance.
+      x-roles: [manager, hr_admin]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DecisionComment'}
+      responses:
+        '200': {$ref: '#/components/responses/LeaveRequestOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/LeaveRuleViolation'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests/{leaveRequestId}/reject:
+    parameters:
+      - $ref: '#/components/parameters/LeaveRequestId'
+    post:
+      tags: [Leave requests, Approvals]
+      operationId: rejectLeaveRequest
+      summary: Reject a pending request (comment required)
+      x-roles: [manager, hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RejectComment'}
+      responses:
+        '200': {$ref: '#/components/responses/LeaveRequestOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests/{leaveRequestId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LeaveRequestId'
+    post:
+      tags: [Leave requests]
+      operationId: cancelLeaveRequest
+      summary: Cancel a request
+      description: |
+        Owner: pending, or approved with `start_date` after today. hr_admin: any pending/approved
+        request except their own started leave. Cancelling an approved request writes a
+        `reversal` ledger entry for the full amount.
+      x-roles: [employee, manager, hr_admin]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DecisionComment'}
+      responses:
+        '200': {$ref: '#/components/responses/LeaveRequestOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /approvals:
+    get:
+      tags: [Approvals]
+      operationId: listApprovals
+      summary: Approval inbox
+      description: Requests the caller may decide (direct reports; any for hr_admin, never own).
+      x-roles: [manager, hr_admin]
+      parameters:
+        - name: filter[status]
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending]
+            default: pending
+        - $ref: '#/components/parameters/FilterDepartment'
+        - $ref: '#/components/parameters/SortLeaveRequests'
+        - $ref: '#/components/parameters/IncludeLeaveRequest'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': {$ref: '#/components/responses/LeaveRequestList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-types:
+    get:
+      tags: [Leave types]
+      operationId: listLeaveTypes
+      summary: Leave types
+      description: Active types for everyone; hr_admin may pass `filter[is_active]=false`.
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - name: filter[is_active]
+          in: query
+          required: false
+          schema: {type: boolean, default: true}
+      responses:
+        '200':
+          description: All matching types (not paginated; small set).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/LeaveType'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Leave types]
+      operationId: createLeaveType
+      summary: Create a leave type
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LeaveTypeCreate'}
+      responses:
+        '201': {$ref: '#/components/responses/LeaveTypeCreated'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-types/{leaveTypeId}:
+    parameters:
+      - $ref: '#/components/parameters/LeaveTypeId'
+    get:
+      tags: [Leave types]
+      operationId: getLeaveType
+      summary: Leave type detail
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/LeaveTypeOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Leave types]
+      operationId: updateLeaveType
+      summary: Update a leave type (code is immutable)
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LeaveTypeUpdate'}
+      responses:
+        '200': {$ref: '#/components/responses/LeaveTypeOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /holidays:
+    get:
+      tags: [Holidays]
+      operationId: listHolidays
+      summary: Holidays of a leave year
+      x-roles: [employee, manager, hr_admin]
+      x-module: holidays
+      parameters:
+        - $ref: '#/components/parameters/FilterYear'
+      responses:
+        '200':
+          description: Holidays ordered by date (not paginated).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Holiday'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Holidays]
+      operationId: createHoliday
+      summary: Create a holiday
+      x-roles: [hr_admin]
+      x-module: holidays
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HolidayWrite'}
+      responses:
+        '201': {$ref: '#/components/responses/HolidayCreated'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /holidays/{holidayId}:
+    parameters:
+      - $ref: '#/components/parameters/HolidayId'
+    get:
+      tags: [Holidays]
+      operationId: getHoliday
+      summary: Holiday detail
+      x-roles: [employee, manager, hr_admin]
+      x-module: holidays
+      responses:
+        '200': {$ref: '#/components/responses/HolidayOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Holidays]
+      operationId: updateHoliday
+      summary: Update a holiday
+      x-roles: [hr_admin]
+      x-module: holidays
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HolidayWrite'}
+      responses:
+        '200': {$ref: '#/components/responses/HolidayOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Holidays]
+      operationId: deleteHoliday
+      summary: Delete a holiday
+      x-roles: [hr_admin]
+      x-module: holidays
+      responses:
+        '204': {description: Deleted.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: Users
+      description: hr_admin sees all users; manager sees their direct reports.
+      x-roles: [manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterDepartment'
+        - name: filter[is_active]
+          in: query
+          required: false
+          schema: {type: boolean}
+        - name: filter[role]
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/Role'}
+        - name: filter[q]
+          in: query
+          required: false
+          description: Case-insensitive match on name, email or employee code.
+          schema: {type: string, maxLength: 100}
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [name, -name, date_of_joining, -date_of_joining, created_at, -created_at]
+            default: name
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of users.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: User detail
+      x-roles: [manager, hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/UserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update HR-owned user fields
+      description: |
+        Name, email and role come from Keycloak and are read-only here. Sending `role`
+        yields 422 `ROLE_READ_ONLY`. Setting `date_of_joining` for the first time grants
+        the prorated entitlement.
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UserUpdate'}
+      responses:
+        '200': {$ref: '#/components/responses/UserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users/{userId}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Users]
+      operationId: deactivateUser
+      summary: Deactivate a user
+      description: Refuses future logins/API calls, ends sessions, cancels pending requests.
+      x-roles: [hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/UserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users/{userId}/activate:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Users]
+      operationId: activateUser
+      summary: Re-activate a user
+      x-roles: [hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/UserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users/{userId}/balances:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Balances, Users]
+      operationId: listUserBalances
+      summary: A user's balances
+      description: Allowed for the user, their direct manager and hr_admin.
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterYear'
+      responses:
+        '200': {$ref: '#/components/responses/BalanceList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users/{userId}/ledger-entries:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Balances, Users]
+      operationId: listUserLedgerEntries
+      summary: A user's ledger entries
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/FilterYear'
+        - $ref: '#/components/parameters/FilterLeaveType'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': {$ref: '#/components/responses/LedgerEntryList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Balances, Users]
+      operationId: createBalanceAdjustment
+      summary: Manual balance adjustment
+      description: Appends an `adjustment` ledger entry. Ledger entries are never updated or deleted.
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdjustmentCreate'}
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location:
+              description: URL of the user's ledger.
+              schema: {type: string, format: uri}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data: {$ref: '#/components/schemas/LedgerEntry'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /admin/users:
+    get:
+      tags: [Identity admin]
+      operationId: adminListUsers
+      summary: List / search identity users (Keycloak + local mirror)
+      description: |
+        Searches Keycloak (`search`, `first`, `max`) and merges LMS fields from the local mirror.
+        Keycloak users without a local row get a mirror row on the fly, so every item has a ULID.
+      x-roles: [hr_admin]
+      x-module: user_management
+      parameters:
+        - name: filter[q]
+          in: query
+          required: false
+          description: Matches username, email, first or last name (Keycloak search).
+          schema: {type: string, maxLength: 100}
+        - name: filter[enabled]
+          in: query
+          required: false
+          schema: {type: boolean}
+        - name: filter[role]
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/Role'}
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of identity users.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/IdentityUser'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+    post:
+      tags: [Identity admin]
+      operationId: adminCreateUser
+      summary: Create a user in Keycloak and the LMS
+      description: |
+        Keycloak first (no password; `execute-actions-email` with `UPDATE_PASSWORD` and
+        `VERIFY_EMAIL` is sent after commit), then the local row with `keycloak_sub`. If the
+        local write fails the Keycloak user is deleted (compensation). Audited in
+        `user_admin_audits`. Supports `Idempotency-Key` (Redis, 24 h).
+      x-roles: [hr_admin]
+      x-module: user_management
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IdentityUserCreate'}
+            examples:
+              dave: {$ref: '#/components/examples/IdentityUserCreateDave'}
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location:
+              description: URL of the new user.
+              schema: {type: string, format: uri}
+            Idempotent-Replayed: {$ref: '#/components/headers/Idempotent-Replayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IdentityUserEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/IdpConflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+
+  /admin/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Identity admin]
+      operationId: adminGetUser
+      summary: Identity user detail
+      x-roles: [hr_admin]
+      x-module: user_management
+      responses:
+        '200': {$ref: '#/components/responses/IdentityUserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+    patch:
+      tags: [Identity admin]
+      operationId: adminUpdateUser
+      summary: Update profile (Keycloak) and LMS fields in one call
+      description: Profile fields of federated users (`federated=true`) are read-only (422 `IDP_READ_ONLY`).
+      x-roles: [hr_admin]
+      x-module: user_management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IdentityUserUpdate'}
+      responses:
+        '200': {$ref: '#/components/responses/IdentityUserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/IdpConflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+
+  /admin/users/{userId}/enable:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Identity admin]
+      operationId: adminEnableUser
+      summary: Enable in Keycloak and re-activate locally
+      x-roles: [hr_admin]
+      x-module: user_management
+      responses:
+        '200': {$ref: '#/components/responses/IdentityUserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+
+  /admin/users/{userId}/disable:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Identity admin]
+      operationId: adminDisableUser
+      summary: Disable in Keycloak, log out all sessions, deactivate locally
+      description: Guardrails - not yourself (403 `SELF_MODIFICATION_FORBIDDEN`), not the last active hr_admin (409 `LAST_HR_ADMIN`).
+      x-roles: [hr_admin]
+      x-module: user_management
+      responses:
+        '200': {$ref: '#/components/responses/IdentityUserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+
+  /admin/users/{userId}/roles:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    put:
+      tags: [Identity admin]
+      operationId: adminSetUserRoles
+      summary: Replace the user's LMS realm role
+      description: |
+        Allow-list `employee`, `manager`, `hr_admin`; exactly one. Other realm roles are untouched.
+        Guardrails - no self-demotion (403), not the last active hr_admin (409), provider may
+        refuse for federated users (422 `IDP_READ_ONLY`).
+      x-roles: [hr_admin]
+      x-module: user_management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoleAssignment'}
+            example: {roles: [manager]}
+      responses:
+        '200': {$ref: '#/components/responses/IdentityUserOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+
+  /admin/users/{userId}/password-reset:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Identity admin]
+      operationId: adminSendPasswordReset
+      summary: Send a Keycloak UPDATE_PASSWORD email
+      description: Not available for federated users (422 `IDP_READ_ONLY`).
+      x-roles: [hr_admin]
+      x-module: user_management
+      responses:
+        '202': {description: Email requested from Keycloak.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/IdpUnavailable'}
+
+  /departments:
+    get:
+      tags: [Departments]
+      operationId: listDepartments
+      summary: Departments
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: All departments (not paginated).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Department'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Departments]
+      operationId: createDepartment
+      summary: Create a department
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DepartmentWrite'}
+      responses:
+        '201': {$ref: '#/components/responses/DepartmentCreated'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /departments/{departmentId}:
+    parameters:
+      - $ref: '#/components/parameters/DepartmentId'
+    get:
+      tags: [Departments]
+      operationId: getDepartment
+      summary: Department detail
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/DepartmentOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Departments]
+      operationId: updateDepartment
+      summary: Update a department
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DepartmentWrite'}
+      responses:
+        '200': {$ref: '#/components/responses/DepartmentOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Departments]
+      operationId: deleteDepartment
+      summary: Delete an empty department
+      x-roles: [hr_admin]
+      responses:
+        '204': {description: Deleted.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /settings/branding:
+    get:
+      tags: [Settings]
+      operationId: getBranding
+      summary: Effective branding (DB override ?? env default)
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/BrandingOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Settings]
+      operationId: updateBranding
+      summary: Override brand name / colours
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BrandingUpdate'}
+      responses:
+        '200': {$ref: '#/components/responses/BrandingOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Settings]
+      operationId: resetBranding
+      summary: Reset branding to env defaults (deletes override rows and stored assets)
+      x-roles: [hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/BrandingOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /settings/branding/assets/{asset}:
+    parameters:
+      - name: asset
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [logo, favicon]
+    put:
+      tags: [Settings]
+      operationId: uploadBrandingAsset
+      summary: Upload logo or favicon (stored on BRANDING_DISK, RustFS/S3)
+      description: |
+        logo: PNG/JPEG/WebP, max 1 MB, max 1024x1024. favicon: PNG/ICO, max 256 KB.
+        SVG is rejected. Stored as `{asset}-{sha1}.{ext}`; the public URL changes on upload.
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, image/webp, image/x-icon, image/vnd.microsoft.icon
+      responses:
+        '200': {$ref: '#/components/responses/BrandingOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Settings]
+      operationId: deleteBrandingAsset
+      summary: Remove logo or favicon (falls back to the bundled default)
+      x-roles: [hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/BrandingOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /modules:
+    get:
+      tags: [Settings]
+      operationId: listModules
+      summary: Module registry with licensed / enabled state
+      x-roles: [hr_admin]
+      responses:
+        '200':
+          description: All registry modules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Module'}
+                  meta: {type: object}
+                  links: {type: object}
+              examples:
+                default: {$ref: '#/components/examples/ModuleList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /modules/{moduleKey}:
+    parameters:
+      - name: moduleKey
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ModuleKey'}
+    patch:
+      tags: [Settings]
+      operationId: updateModule
+      summary: Enable / disable a licensed module
+      description: |
+        Only modules in `MODULES_ENABLED` (env, licensed) and `available` can be enabled;
+        others yield 422 `MODULE_NOT_LICENSED`. Disabling `api` through the API is refused
+        (422) to avoid locking the caller out; use the web admin.
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: Updated module.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data: {$ref: '#/components/schemas/Module'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /reports/leave-requests:
+    get:
+      tags: [Reports]
+      operationId: reportLeaveRequests
+      summary: Leave requests report (JSON or CSV)
+      description: '`Accept: text/csv` streams the whole result as CSV (no pagination).'
+      x-roles: [hr_admin]
+      x-module: reports
+      parameters:
+        - $ref: '#/components/parameters/FilterFrom'
+        - $ref: '#/components/parameters/FilterTo'
+        - $ref: '#/components/parameters/FilterDepartment'
+        - $ref: '#/components/parameters/FilterLeaveType'
+        - $ref: '#/components/parameters/FilterStatus'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Report rows.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/LeaveRequestReportRow'}
+            text/csv:
+              schema: {type: string}
+              example: |
+                request_id,employee_code,employee,department,leave_type,start_date,end_date,day_part,days,status,decided_by,decided_at
+                01JD3M7V1Q8Z6K2H5R9T4W0XYZ,E-0042,Alice Rao,IT,EL,2026-10-07,2026-10-09,full,3.0,approved,Bob Mehta,2026-09-30T09:12:00Z
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '406': {$ref: '#/components/responses/NotAcceptable'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /reports/balances:
+    get:
+      tags: [Reports]
+      operationId: reportBalances
+      summary: Balances per user per type for a leave year (JSON or CSV)
+      x-roles: [hr_admin]
+      x-module: reports
+      parameters:
+        - $ref: '#/components/parameters/FilterYear'
+        - $ref: '#/components/parameters/FilterDepartment'
+        - $ref: '#/components/parameters/FilterLeaveType'
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Report rows.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/BalanceReportRow'}
+            text/csv:
+              schema: {type: string}
+              example: |
+                employee_code,employee,department,leave_type,year,entitled,used,pending,balance,available
+                E-0042,Alice Rao,IT,EL,2026,42.0,3.0,4.0,39.0,35.0
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '406': {$ref: '#/components/responses/NotAcceptable'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /healthz:
+    servers:
+      - url: '{baseUrl}'
+        description: Outside /api/v1.
+        variables:
+          baseUrl:
+            default: http://localhost:8080
+    get:
+      tags: [Health]
+      operationId: healthz
+      summary: Liveness (no I/O)
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: ok}
+
+  /readyz:
+    servers:
+      - url: '{baseUrl}'
+        description: Outside /api/v1.
+        variables:
+          baseUrl:
+            default: http://localhost:8080
+    get:
+      tags: [Health]
+      operationId: readyz
+      summary: Readiness (Postgres + Redis)
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+              example: {status: ready, checks: {db: ok, redis: ok}}
+        '503':
+          description: A dependency is down.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+              example: {status: unavailable, checks: {db: ok, redis: fail}}
+
+components:
+  securitySchemes:
+    keycloak:
+      type: openIdConnect
+      description: |
+        Keycloak realm `lms` of the deployment. Public client `lms-api-cli` (auth code + PKCE S256).
+        Access token must be RS256, `iss` = `{KEYCLOAK_PUBLIC_URL}/realms/lms`, `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES`.
+        Send as `Authorization: Bearer <token>`.
+      openIdConnectUrl: http://localhost:8081/realms/lms/.well-known/openid-configuration
+
+  headers:
+    X-RateLimit-Limit:
+      description: Requests allowed per window (Redis limiter).
+      schema: {type: integer, example: 60}
+    X-RateLimit-Remaining:
+      description: Requests left in the current window.
+      schema: {type: integer, example: 57}
+    X-RateLimit-Reset:
+      description: Unix time when the window resets.
+      schema: {type: integer}
+    Retry-After:
+      description: Seconds to wait before retrying.
+      schema: {type: integer, example: 30}
+    Idempotent-Replayed:
+      description: '`true` when the response was replayed from the idempotency store.'
+      schema: {type: string, enum: ['true']}
+
+  parameters:
+    LeaveRequestId:
+      name: leaveRequestId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Ulid'}
+    LeaveTypeId:
+      name: leaveTypeId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Ulid'}
+    HolidayId:
+      name: holidayId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Ulid'}
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Ulid'}
+    DepartmentId:
+      name: departmentId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Ulid'}
+    PageNumber:
+      name: page[number]
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, default: 1}
+    PageSize:
+      name: page[size]
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+    FilterStatus:
+      name: filter[status]
+      in: query
+      required: false
+      description: Comma-separated statuses (OR).
+      schema: {type: string, pattern: '^(pending|approved|rejected|cancelled)(,(pending|approved|rejected|cancelled))*$'}
+      example: pending,approved
+    FilterYear:
+      name: filter[year]
+      in: query
+      required: false
+      description: Leave year (labelled by the calendar year it starts in; see LEAVE_YEAR_START_MONTH). Default current leave year.
+      schema: {type: integer, minimum: 2000, maximum: 2100}
+    FilterFrom:
+      name: filter[from]
+      in: query
+      required: false
+      description: Requests ending on/after this date.
+      schema: {type: string, format: date}
+    FilterTo:
+      name: filter[to]
+      in: query
+      required: false
+      description: Requests starting on/before this date.
+      schema: {type: string, format: date}
+    FilterUser:
+      name: filter[user]
+      in: query
+      required: false
+      schema: {$ref: '#/components/schemas/Ulid'}
+    FilterLeaveType:
+      name: filter[leave_type]
+      in: query
+      required: false
+      schema: {$ref: '#/components/schemas/Ulid'}
+    FilterDepartment:
+      name: filter[department]
+      in: query
+      required: false
+      schema: {$ref: '#/components/schemas/Ulid'}
+    SortLeaveRequests:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [start_date, -start_date, created_at, -created_at, days, -days]
+        default: -start_date
+    IncludeLeaveRequest:
+      name: include
+      in: query
+      required: false
+      description: Comma list of `actions`, `user`, `leave_type`.
+      schema: {type: string, pattern: '^(actions|user|leave_type)(,(actions|user|leave_type))*$'}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-generated unique key (UUID/ULID). Stored in Redis for 24 h per user.
+      schema: {type: string, minLength: 8, maxLength: 255}
+      example: 6c0d7c4e-2f5b-4a39-9a8f-3c1d2b7e9f10
+
+  responses:
+    Unauthenticated:
+      description: Missing or invalid Bearer JWT, or user inactive / without an LMS role.
+      headers:
+        WWW-Authenticate:
+          description: Bearer challenge.
+          schema: {type: string, example: 'Bearer error="invalid_token"'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          example:
+            type: urn:lms:problem:unauthenticated
+            title: Unauthenticated
+            status: 401
+            detail: The access token has expired.
+            instance: /api/v1/me
+            code: UNAUTHENTICATED
+            request_id: 6f1c0e9a8b7d4c3e
+    Forbidden:
+      description: A policy denies the action (`FORBIDDEN`, `SELF_MODIFICATION_FORBIDDEN`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          example:
+            type: urn:lms:problem:forbidden
+            title: Forbidden
+            status: 403
+            detail: You cannot approve your own leave request.
+            instance: /api/v1/leave-requests/01JD3M7V1Q8Z6K2H5R9T4W0XYZ/approve
+            code: FORBIDDEN
+            request_id: 6f1c0e9a8b7d4c3e
+    NotFound:
+      description: Unknown or invisible resource, or the module (`api`, `holidays`, `reports`) is disabled.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          example:
+            type: urn:lms:problem:not-found
+            title: Not Found
+            status: 404
+            detail: The requested resource does not exist.
+            instance: /api/v1/holidays
+            code: NOT_FOUND
+            request_id: 6f1c0e9a8b7d4c3e
+    NotAcceptable:
+      description: Unsupported `Accept`.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    UnsupportedMediaType:
+      description: Unsupported `Content-Type`.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Conflict:
+      description: State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LAST_HR_ADMIN`).
+      headers:
+        Retry-After: {$ref: '#/components/headers/Retry-After'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          examples:
+            invalidTransition: {$ref: '#/components/examples/ProblemInvalidTransition'}
+            idempotencyInProgress: {$ref: '#/components/examples/ProblemIdempotencyInProgress'}
+    ValidationFailed:
+      description: Validation failed.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ValidationProblem'}
+          examples:
+            validation: {$ref: '#/components/examples/ProblemValidation'}
+    LeaveRuleViolation:
+      description: Validation or a leave business rule (V1–V9) failed.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ValidationProblem'}
+          examples:
+            validation: {$ref: '#/components/examples/ProblemValidation'}
+            overlap: {$ref: '#/components/examples/ProblemOverlap'}
+            insufficientBalance: {$ref: '#/components/examples/ProblemInsufficientBalance'}
+            idempotencyKeyReused: {$ref: '#/components/examples/ProblemIdempotencyKeyReused'}
+    TooManyRequests:
+      description: Rate limited.
+      headers:
+        Retry-After: {$ref: '#/components/headers/Retry-After'}
+        X-RateLimit-Limit: {$ref: '#/components/headers/X-RateLimit-Limit'}
+        X-RateLimit-Remaining: {$ref: '#/components/headers/X-RateLimit-Remaining'}
+        X-RateLimit-Reset: {$ref: '#/components/headers/X-RateLimit-Reset'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          example:
+            type: urn:lms:problem:rate-limited
+            title: Too Many Requests
+            status: 429
+            detail: Retry in 30 seconds.
+            instance: /api/v1/leave-requests
+            code: RATE_LIMITED
+            request_id: 6f1c0e9a8b7d4c3e
+    IdpConflict:
+      description: Keycloak reported a duplicate username or email.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          example:
+            type: urn:lms:problem:idp-conflict
+            title: Identity provider conflict
+            status: 409
+            detail: A user with this email already exists in the identity provider.
+            instance: /api/v1/admin/users
+            code: IDP_CONFLICT
+            request_id: 6f1c0e9a8b7d4c3e
+    IdpUnavailable:
+      description: Keycloak is unreachable, timed out or returned 5xx. Nothing was written locally.
+      headers:
+        Retry-After: {$ref: '#/components/headers/Retry-After'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          example:
+            type: urn:lms:problem:idp-unavailable
+            title: Identity provider unavailable
+            status: 503
+            detail: Keycloak did not respond in time. Try again later.
+            instance: /api/v1/admin/users
+            code: IDP_UNAVAILABLE
+            request_id: 6f1c0e9a8b7d4c3e
+    IdentityUserOk:
+      description: Identity user.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/IdentityUserEnvelope'}
+    LeaveRequestOk:
+      description: The updated request.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/LeaveRequestEnvelope'}
+    LeaveRequestList:
+      description: Page of leave requests.
+      headers:
+        X-RateLimit-Limit: {$ref: '#/components/headers/X-RateLimit-Limit'}
+        X-RateLimit-Remaining: {$ref: '#/components/headers/X-RateLimit-Remaining'}
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/PaginatedEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/LeaveRequest'}
+    BalanceList:
+      description: One row per tracked leave type.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data:
+                type: array
+                items: {$ref: '#/components/schemas/Balance'}
+              meta:
+                type: object
+                properties:
+                  year: {type: integer}
+                  leave_year_start: {type: string, format: date}
+                  leave_year_end: {type: string, format: date}
+              links: {type: object}
+          examples:
+            alice: {$ref: '#/components/examples/BalancesAlice'}
+    LedgerEntryList:
+      description: Page of ledger entries, oldest first.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/PaginatedEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/LedgerEntry'}
+    LeaveTypeOk:
+      description: Leave type.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/LeaveType'}
+              meta: {type: object}
+              links: {type: object}
+    LeaveTypeCreated:
+      description: Created.
+      headers:
+        Location:
+          description: URL of the new resource.
+          schema: {type: string, format: uri}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/LeaveType'}
+              meta: {type: object}
+              links: {type: object}
+    HolidayOk:
+      description: Holiday.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/Holiday'}
+              meta: {type: object}
+              links: {type: object}
+    HolidayCreated:
+      description: Created.
+      headers:
+        Location:
+          description: URL of the new resource.
+          schema: {type: string, format: uri}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/Holiday'}
+              meta: {type: object}
+              links: {type: object}
+    DepartmentOk:
+      description: Department.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/Department'}
+              meta: {type: object}
+              links: {type: object}
+    DepartmentCreated:
+      description: Created.
+      headers:
+        Location:
+          description: URL of the new resource.
+          schema: {type: string, format: uri}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/Department'}
+              meta: {type: object}
+              links: {type: object}
+    UserOk:
+      description: User.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/UserEnvelope'}
+    BrandingOk:
+      description: Effective branding.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/Branding'}
+              meta: {type: object}
+              links: {type: object}
+          examples:
+            acme: {$ref: '#/components/examples/BrandingAcme'}
+
+  schemas:
+    Ulid:
+      type: string
+      description: ULID (Crockford base32), the row's `public_id`.
+      pattern: '^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
+      examples: [01JD3M7V1Q8Z6K2H5R9T4W0XYZ]
+    Days:
+      type: number
+      multipleOf: 0.5
+      description: Day amount, always a multiple of 0.5.
+    Role:
+      type: string
+      enum: [employee, manager, hr_admin]
+      description: Keycloak realm role (read-only in this API).
+    LeaveStatus:
+      type: string
+      enum: [pending, approved, rejected, cancelled]
+    DayPart:
+      type: string
+      enum: [full, first_half, second_half]
+    LedgerKind:
+      type: string
+      enum: [grant, carry_forward, lapse, debit, reversal, adjustment]
+    LeaveAction:
+      type: string
+      enum: [submitted, approved, rejected, cancelled]
+    ModuleKey:
+      type: string
+      enum: [holidays, reports, api, notifications, user_management, multi_level_approval, delegation]
+    HexColor:
+      type: string
+      pattern: '^#[0-9a-fA-F]{6}$'
+      examples: ['#1f6feb']
+
+    Links:
+      type: object
+      properties:
+        first: {type: [string, 'null'], format: uri}
+        prev: {type: [string, 'null'], format: uri}
+        next: {type: [string, 'null'], format: uri}
+        last: {type: [string, 'null'], format: uri}
+    PageMeta:
+      type: object
+      required: [current_page, per_page, total, last_page]
+      properties:
+        current_page: {type: integer, minimum: 1}
+        per_page: {type: integer, minimum: 1, maximum: 100}
+        total: {type: integer, minimum: 0}
+        last_page: {type: integer, minimum: 1}
+    PaginatedEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {type: array}
+        meta: {$ref: '#/components/schemas/PageMeta'}
+        links: {$ref: '#/components/schemas/Links'}
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details with LMS extensions `code` and `request_id`.
+      required: [type, title, status, code]
+      properties:
+        type: {type: string, format: uri-reference, examples: ['urn:lms:problem:leave-overlap']}
+        title: {type: string}
+        status: {type: integer, minimum: 400, maximum: 599}
+        detail: {type: string}
+        instance: {type: string, format: uri-reference}
+        code: {$ref: '#/components/schemas/ProblemCode'}
+        request_id: {type: string}
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: object
+              additionalProperties:
+                type: array
+                items: {type: string}
+    ProblemCode:
+      type: string
+      description: Stable machine-readable error code. See API_GUIDELINES §4.
+      enum:
+        - BAD_REQUEST
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - NOT_ACCEPTABLE
+        - INVALID_TRANSITION
+        - IDEMPOTENCY_IN_PROGRESS
+        - DEPARTMENT_NOT_EMPTY
+        - UNSUPPORTED_MEDIA_TYPE
+        - VALIDATION_FAILED
+        - LEAVE_TYPE_INACTIVE
+        - BACKDATE_LIMIT_EXCEEDED
+        - INVALID_DATE_RANGE
+        - HALF_DAY_NOT_ALLOWED
+        - NO_WORKING_DAYS
+        - LEAVE_OVERLAP
+        - INSUFFICIENT_BALANCE
+        - NO_APPROVER
+        - COMMENT_REQUIRED
+        - IDEMPOTENCY_KEY_REUSED
+        - MODULE_NOT_LICENSED
+        - MANAGER_CYCLE
+        - ROLE_READ_ONLY
+        - SELF_MODIFICATION_FORBIDDEN
+        - LAST_HR_ADMIN
+        - IDP_CONFLICT
+        - IDP_READ_ONLY
+        - IDP_UNAVAILABLE
+        - RATE_LIMITED
+        - INTERNAL_ERROR
+        - SERVICE_UNAVAILABLE
+
+    UserSummary:
+      type: object
+      required: [id, name]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        name: {type: string}
+    DepartmentSummary:
+      type: object
+      required: [id, code, name]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        code: {type: string}
+        name: {type: string}
+    LeaveTypeSummary:
+      type: object
+      required: [id, code, name]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        code: {type: string}
+        name: {type: string}
+
+    User:
+      type: object
+      required: [id, name, email, role, department, manager, employee_code, designation, employment_type, date_of_joining, is_active, last_login_at, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        name: {type: string, readOnly: true, description: From Keycloak.}
+        email: {type: string, format: email, readOnly: true, description: From Keycloak.}
+        role: {allOf: [{$ref: '#/components/schemas/Role'}], readOnly: true}
+        department:
+          oneOf:
+            - $ref: '#/components/schemas/DepartmentSummary'
+            - type: 'null'
+        manager:
+          oneOf:
+            - $ref: '#/components/schemas/UserSummary'
+            - type: 'null'
+        employee_code: {type: [string, 'null']}
+        designation: {type: [string, 'null']}
+        employment_type: {type: [string, 'null']}
+        date_of_joining: {type: [string, 'null'], format: date}
+        is_active: {type: boolean}
+        last_login_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+    UserEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/User'}
+        meta: {type: object}
+        links: {type: object}
+    UserUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: HR-owned fields only. `role`, `name`, `email` are rejected (422 `ROLE_READ_ONLY` / `VALIDATION_FAILED`).
+      properties:
+        department_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        manager_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        date_of_joining: {type: string, format: date}
+        employee_code: {type: [string, 'null'], maxLength: 50}
+        designation: {type: [string, 'null'], maxLength: 100}
+        employment_type: {type: [string, 'null'], maxLength: 50}
+
+    Department:
+      type: object
+      required: [id, code, name, users_count]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        code: {type: string, maxLength: 20}
+        name: {type: string, maxLength: 100}
+        users_count: {type: integer, minimum: 0}
+    DepartmentWrite:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code: {type: string, maxLength: 20}
+        name: {type: string, maxLength: 100}
+
+    LeaveType:
+      type: object
+      required: [id, code, name, annual_quota, tracks_balance, carry_forward_cap, max_balance, allow_half_day, max_backdate_days, is_active]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        code: {type: string, maxLength: 10}
+        name: {type: string, maxLength: 100}
+        annual_quota: {$ref: '#/components/schemas/Days'}
+        tracks_balance: {type: boolean}
+        carry_forward_cap:
+          description: null = carry everything, 0 = nothing carries.
+          oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]
+        max_balance:
+          description: null = no ceiling.
+          oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]
+        allow_half_day: {type: boolean}
+        max_backdate_days: {type: integer, minimum: 0}
+        is_active: {type: boolean}
+    LeaveTypeCreate:
+      type: object
+      additionalProperties: false
+      required: [code, name, annual_quota, tracks_balance]
+      properties:
+        code: {type: string, pattern: '^[A-Z0-9_]{1,10}$'}
+        name: {type: string, maxLength: 100}
+        annual_quota: {$ref: '#/components/schemas/Days'}
+        tracks_balance: {type: boolean}
+        carry_forward_cap: {oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]}
+        max_balance: {oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]}
+        allow_half_day: {type: boolean, default: true}
+        max_backdate_days: {type: integer, minimum: 0, default: 0}
+    LeaveTypeUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, maxLength: 100}
+        annual_quota: {$ref: '#/components/schemas/Days'}
+        tracks_balance: {type: boolean}
+        carry_forward_cap: {oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]}
+        max_balance: {oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]}
+        allow_half_day: {type: boolean}
+        max_backdate_days: {type: integer, minimum: 0}
+        is_active: {type: boolean}
+
+    Holiday:
+      type: object
+      required: [id, date, name]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        date: {type: string, format: date}
+        name: {type: string, maxLength: 100}
+    HolidayWrite:
+      type: object
+      additionalProperties: false
+      required: [date, name]
+      properties:
+        date: {type: string, format: date}
+        name: {type: string, maxLength: 100}
+
+    LeaveRequestAction:
+      type: object
+      required: [id, action, from_status, to_status, comment, actor, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        action: {$ref: '#/components/schemas/LeaveAction'}
+        from_status:
+          oneOf: [{$ref: '#/components/schemas/LeaveStatus'}, {type: 'null'}]
+        to_status: {$ref: '#/components/schemas/LeaveStatus'}
+        comment: {type: [string, 'null']}
+        actor: {$ref: '#/components/schemas/UserSummary'}
+        created_at: {type: string, format: date-time}
+    LeaveRequest:
+      type: object
+      required: [id, user, leave_type, start_date, end_date, day_part, days, status, reason, handover_note, leave_year, is_taken, decided_by, decided_at, decision_comment, cancelled_at, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        user: {$ref: '#/components/schemas/UserSummary'}
+        leave_type: {$ref: '#/components/schemas/LeaveTypeSummary'}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        day_part: {$ref: '#/components/schemas/DayPart'}
+        days: {$ref: '#/components/schemas/Days'}
+        status: {$ref: '#/components/schemas/LeaveStatus'}
+        reason: {type: string}
+        handover_note: {type: [string, 'null']}
+        leave_year: {type: integer}
+        is_taken: {type: boolean, description: 'Derived: approved and start_date <= today.'}
+        decided_by:
+          oneOf: [{$ref: '#/components/schemas/UserSummary'}, {type: 'null'}]
+        decided_at: {type: [string, 'null'], format: date-time}
+        decision_comment: {type: [string, 'null']}
+        cancelled_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        actions:
+          type: array
+          description: Present only with `include=actions`.
+          items: {$ref: '#/components/schemas/LeaveRequestAction'}
+    LeaveRequestEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/LeaveRequest'}
+        meta: {type: object}
+        links:
+          type: object
+          properties:
+            self: {type: string, format: uri}
+    LeaveRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [leave_type_id, start_date, end_date, day_part, reason]
+      properties:
+        leave_type_id: {$ref: '#/components/schemas/Ulid'}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        day_part: {$ref: '#/components/schemas/DayPart'}
+        reason: {type: string, minLength: 3, maxLength: 1000}
+        handover_note: {type: [string, 'null'], maxLength: 2000}
+    DecisionComment:
+      type: object
+      additionalProperties: false
+      properties:
+        comment: {type: [string, 'null'], maxLength: 1000}
+    RejectComment:
+      type: object
+      additionalProperties: false
+      required: [comment]
+      properties:
+        comment: {type: string, minLength: 3, maxLength: 1000}
+
+    Balance:
+      type: object
+      description: |
+        entitled = grant + carry_forward + lapse + adjustment; used = -(debit + reversal);
+        balance = entitled - used = SUM(ledger); available = balance - pending.
+      required: [leave_type, year, entitled, used, pending, balance, available]
+      properties:
+        leave_type: {$ref: '#/components/schemas/LeaveTypeSummary'}
+        year: {type: integer}
+        entitled: {type: number}
+        used: {type: number}
+        pending: {type: number}
+        balance: {type: number}
+        available: {type: number}
+    LedgerEntry:
+      type: object
+      required: [id, leave_type, year, kind, days, leave_request_id, actor, note, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        leave_type: {$ref: '#/components/schemas/LeaveTypeSummary'}
+        year: {type: integer}
+        kind: {$ref: '#/components/schemas/LedgerKind'}
+        days: {type: number, multipleOf: 0.5, description: Signed.}
+        leave_request_id:
+          oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]
+        actor:
+          description: null = system (accrual job).
+          oneOf: [{$ref: '#/components/schemas/UserSummary'}, {type: 'null'}]
+        note: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+    AdjustmentCreate:
+      type: object
+      additionalProperties: false
+      required: [leave_type_id, days, note]
+      properties:
+        leave_type_id: {$ref: '#/components/schemas/Ulid'}
+        year: {type: integer, description: Defaults to the current leave year.}
+        days:
+          type: number
+          multipleOf: 0.5
+          not: {const: 0}
+          description: Signed, non-zero.
+        note: {type: string, minLength: 3, maxLength: 255}
+
+    Branding:
+      type: object
+      required: [name, primary_color, accent_color, primary_contrast, logo_url, favicon_url, overridden]
+      properties:
+        name: {type: string, maxLength: 60}
+        primary_color: {$ref: '#/components/schemas/HexColor'}
+        accent_color: {$ref: '#/components/schemas/HexColor'}
+        primary_contrast: {$ref: '#/components/schemas/HexColor'}
+        logo_url: {type: string, format: uri}
+        favicon_url: {type: string, format: uri}
+        overridden:
+          type: array
+          description: Setting keys that currently have a DB override.
+          items:
+            type: string
+            enum: [brand.name, brand.primary_color, brand.accent_color, brand.logo_path, brand.favicon_path]
+    BrandingUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 60}
+        primary_color: {$ref: '#/components/schemas/HexColor'}
+        accent_color: {$ref: '#/components/schemas/HexColor'}
+
+    Module:
+      type: object
+      required: [key, label, licensed, available, enabled, locked]
+      properties:
+        key: {$ref: '#/components/schemas/ModuleKey'}
+        label: {type: string}
+        licensed: {type: boolean, description: In MODULES_ENABLED (env).}
+        available: {type: boolean, description: Implemented (registry).}
+        enabled: {type: boolean, description: licensed AND available AND not disabled by admin.}
+        locked: {type: boolean, description: true when not licensed or not available (cannot be enabled).}
+
+    LeaveRequestReportRow:
+      type: object
+      required: [request_id, employee_code, employee, department, leave_type, start_date, end_date, day_part, days, status, decided_by, decided_at]
+      properties:
+        request_id: {$ref: '#/components/schemas/Ulid'}
+        employee_code: {type: [string, 'null']}
+        employee: {type: string}
+        department: {type: [string, 'null']}
+        leave_type: {type: string}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        day_part: {$ref: '#/components/schemas/DayPart'}
+        days: {$ref: '#/components/schemas/Days'}
+        status: {$ref: '#/components/schemas/LeaveStatus'}
+        decided_by: {type: [string, 'null']}
+        decided_at: {type: [string, 'null'], format: date-time}
+    BalanceReportRow:
+      type: object
+      required: [employee_code, employee, department, leave_type, year, entitled, used, pending, balance, available]
+      properties:
+        employee_code: {type: [string, 'null']}
+        employee: {type: string}
+        department: {type: [string, 'null']}
+        leave_type: {type: string}
+        year: {type: integer}
+        entitled: {type: number}
+        used: {type: number}
+        pending: {type: number}
+        balance: {type: number}
+        available: {type: number}
+
+    IdentityUser:
+      type: object
+      description: Keycloak identity merged with LMS fields.
+      required: [id, keycloak_id, username, email, first_name, last_name, enabled, email_verified, role, federated, federation_link, department, manager, date_of_joining, employee_code, designation, employment_type, is_active]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        keycloak_id: {type: string, format: uuid}
+        username: {type: string}
+        email: {type: [string, 'null'], format: email}
+        first_name: {type: [string, 'null']}
+        last_name: {type: [string, 'null']}
+        enabled: {type: boolean, description: Keycloak enabled flag.}
+        email_verified: {type: boolean}
+        role:
+          description: The LMS realm role, null if the user has none.
+          oneOf: [{$ref: '#/components/schemas/Role'}, {type: 'null'}]
+        federated: {type: boolean, description: 'true when the user comes from LDAP/AD (profile read-only).'}
+        federation_link: {type: [string, 'null']}
+        department:
+          oneOf: [{$ref: '#/components/schemas/DepartmentSummary'}, {type: 'null'}]
+        manager:
+          oneOf: [{$ref: '#/components/schemas/UserSummary'}, {type: 'null'}]
+        date_of_joining: {type: [string, 'null'], format: date}
+        employee_code: {type: [string, 'null']}
+        designation: {type: [string, 'null']}
+        employment_type: {type: [string, 'null']}
+        is_active: {type: boolean, description: Local LMS flag.}
+    IdentityUserEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/IdentityUser'}
+        meta: {type: object}
+        links: {type: object}
+    IdentityUserCreate:
+      type: object
+      additionalProperties: false
+      required: [username, email, first_name, last_name]
+      properties:
+        username: {type: string, pattern: '^[a-z0-9._-]{3,64}$'}
+        email: {type: string, format: email, maxLength: 255}
+        first_name: {type: string, minLength: 1, maxLength: 100}
+        last_name: {type: string, minLength: 1, maxLength: 100}
+        enabled: {type: boolean, default: true}
+        role: {allOf: [{$ref: '#/components/schemas/Role'}], default: employee}
+        department_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        manager_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        date_of_joining: {type: [string, 'null'], format: date}
+        employee_code: {type: [string, 'null'], maxLength: 50}
+        designation: {type: [string, 'null'], maxLength: 100}
+        employment_type: {type: [string, 'null'], maxLength: 50}
+    IdentityUserUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Profile fields go to Keycloak; the rest are LMS fields. Use `/roles`, `/enable`, `/disable` for those.
+      properties:
+        email: {type: string, format: email, maxLength: 255}
+        first_name: {type: string, minLength: 1, maxLength: 100}
+        last_name: {type: string, minLength: 1, maxLength: 100}
+        department_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        manager_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        date_of_joining: {type: [string, 'null'], format: date}
+        employee_code: {type: [string, 'null'], maxLength: 50}
+        designation: {type: [string, 'null'], maxLength: 100}
+        employment_type: {type: [string, 'null'], maxLength: 50}
+    RoleAssignment:
+      type: object
+      additionalProperties: false
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          minItems: 1
+          maxItems: 1
+          description: Exactly one LMS realm role (allow-list).
+          items: {$ref: '#/components/schemas/Role'}
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: {type: string, enum: [ready, unavailable]}
+        checks:
+          type: object
+          required: [db, redis]
+          properties:
+            db: {type: string, enum: [ok, fail]}
+            redis: {type: string, enum: [ok, fail]}
+
+  examples:
+    UserAlice:
+      summary: An employee
+      value:
+        data:
+          id: 01JB8Z0K4E3N5P6Q7R8S9T0V1W
+          name: Alice Rao
+          email: alice@acme.example
+          role: employee
+          department: {id: 01JB8YZZ9A1B2C3D4E5F6G7H8J, code: IT, name: Information Technology}
+          manager: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1X, name: Bob Mehta}
+          employee_code: E-0042
+          designation: Software Engineer
+          employment_type: full_time
+          date_of_joining: '2024-06-03'
+          is_active: true
+          last_login_at: '2026-11-19T08:55:00Z'
+          created_at: '2024-06-03T09:00:00Z'
+        meta: {}
+        links: {}
+    LeaveRequestCreateEL:
+      summary: 4 working days of EL (25 Dec is a holiday)
+      value:
+        leave_type_id: 01JB8YZZ9A1B2C3D4E5F6G7H8K
+        start_date: '2026-12-21'
+        end_date: '2026-12-25'
+        day_part: full
+        reason: Year-end family trip
+        handover_note: Carol covers on-call.
+    LeaveRequestPending:
+      summary: Newly created request
+      value:
+        data:
+          id: 01JD3M7V1Q8Z6K2H5R9T4W0XYZ
+          user: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1W, name: Alice Rao}
+          leave_type: {id: 01JB8YZZ9A1B2C3D4E5F6G7H8K, code: EL, name: Earned Leave}
+          start_date: '2026-12-21'
+          end_date: '2026-12-25'
+          day_part: full
+          days: 4
+          status: pending
+          reason: Year-end family trip
+          handover_note: Carol covers on-call.
+          leave_year: 2026
+          is_taken: false
+          decided_by: null
+          decided_at: null
+          decision_comment: null
+          cancelled_at: null
+          created_at: '2026-11-19T10:15:00Z'
+          updated_at: '2026-11-19T10:15:00Z'
+        meta: {}
+        links:
+          self: http://localhost:8080/api/v1/leave-requests/01JD3M7V1Q8Z6K2H5R9T4W0XYZ
+    LeaveRequestApproved:
+      summary: Approved request with include=actions
+      value:
+        data:
+          id: 01JC1A2B3C4D5E6F7G8H9J0K1M
+          user: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1W, name: Alice Rao}
+          leave_type: {id: 01JB8YZZ9A1B2C3D4E5F6G7H8K, code: EL, name: Earned Leave}
+          start_date: '2026-10-07'
+          end_date: '2026-10-09'
+          day_part: full
+          days: 3
+          status: approved
+          reason: Sister's wedding
+          handover_note: null
+          leave_year: 2026
+          is_taken: true
+          decided_by: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1X, name: Bob Mehta}
+          decided_at: '2026-09-30T09:12:00Z'
+          decision_comment: Enjoy!
+          cancelled_at: null
+          created_at: '2026-09-28T14:02:00Z'
+          updated_at: '2026-09-30T09:12:00Z'
+          actions:
+            - id: 01JC1A2B3C4D5E6F7G8H9J0K1N
+              action: submitted
+              from_status: null
+              to_status: pending
+              comment: null
+              actor: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1W, name: Alice Rao}
+              created_at: '2026-09-28T14:02:00Z'
+            - id: 01JC1A2B3C4D5E6F7G8H9J0K1P
+              action: approved
+              from_status: pending
+              to_status: approved
+              comment: Enjoy!
+              actor: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1X, name: Bob Mehta}
+              created_at: '2026-09-30T09:12:00Z'
+        meta: {}
+        links:
+          self: http://localhost:8080/api/v1/leave-requests/01JC1A2B3C4D5E6F7G8H9J0K1M
+    BalancesAlice:
+      summary: EL balance with one approved and one pending request
+      value:
+        data:
+          - leave_type: {id: 01JB8YZZ9A1B2C3D4E5F6G7H8K, code: EL, name: Earned Leave}
+            year: 2026
+            entitled: 42
+            used: 3
+            pending: 4
+            balance: 39
+            available: 35
+        meta: {year: 2026, leave_year_start: '2026-01-01', leave_year_end: '2026-12-31'}
+        links: {}
+    BrandingAcme:
+      summary: Overridden name and primary colour
+      value:
+        data:
+          name: Acme Leave
+          primary_color: '#c2410c'
+          accent_color: '#0e8a16'
+          primary_contrast: '#ffffff'
+          logo_url: http://localhost:8080/branding/logo?v=3f2a9c
+          favicon_url: http://localhost:8080/favicon.ico
+          overridden: [brand.name, brand.primary_color, brand.logo_path]
+        meta: {}
+        links: {}
+    ModuleList:
+      summary: Default licence, reports disabled by admin
+      value:
+        data:
+          - {key: holidays, label: Holiday calendar, licensed: true, available: true, enabled: true, locked: false}
+          - {key: reports, label: Reports & exports, licensed: true, available: true, enabled: false, locked: false}
+          - {key: api, label: REST API, licensed: true, available: true, enabled: true, locked: false}
+          - {key: notifications, label: Email notifications, licensed: true, available: true, enabled: true, locked: false}
+          - {key: user_management, label: User management (Keycloak), licensed: true, available: true, enabled: true, locked: false}
+          - {key: multi_level_approval, label: Multi-level approval, licensed: false, available: false, enabled: false, locked: true}
+          - {key: delegation, label: Approval delegation, licensed: false, available: false, enabled: false, locked: true}
+        meta: {}
+        links: {}
+    IdentityUserCreateDave:
+      summary: New employee created by HR
+      value:
+        username: dave.k
+        email: dave.k@acme.example
+        first_name: Dave
+        last_name: Kumar
+        enabled: true
+        role: employee
+        department_id: 01JB8YZZ9A1B2C3D4E5F6G7H8J
+        manager_id: 01JB8Z0K4E3N5P6Q7R8S9T0V1X
+        date_of_joining: '2026-12-01'
+        employee_code: E-0107
+        designation: QA Engineer
+        employment_type: full_time
+    ProblemValidation:
+      summary: Field validation
+      value:
+        type: urn:lms:problem:validation-failed
+        title: Validation failed
+        status: 422
+        detail: The given data was invalid.
+        instance: /api/v1/leave-requests
+        code: VALIDATION_FAILED
+        request_id: 6f1c0e9a8b7d4c3e
+        errors:
+          reason: [The reason field is required.]
+    ProblemOverlap:
+      summary: Overlapping request (V6)
+      value:
+        type: urn:lms:problem:leave-overlap
+        title: Leave overlaps an existing request
+        status: 422
+        detail: You already have a pending or approved request between 2026-12-21 and 2026-12-25.
+        instance: /api/v1/leave-requests
+        code: LEAVE_OVERLAP
+        request_id: 6f1c0e9a8b7d4c3e
+        errors:
+          start_date: [Overlaps request 01JD3M7V1Q8Z6K2H5R9T4W0XYZ.]
+    ProblemInsufficientBalance:
+      summary: Not enough available balance (V7)
+      value:
+        type: urn:lms:problem:insufficient-balance
+        title: Insufficient balance
+        status: 422
+        detail: Requested 5 days of EL but only 4 are available.
+        instance: /api/v1/leave-requests
+        code: INSUFFICIENT_BALANCE
+        request_id: 6f1c0e9a8b7d4c3e
+        errors:
+          end_date: [Requested 5 days, available 4.]
+    ProblemIdempotencyKeyReused:
+      summary: Same Idempotency-Key, different body
+      value:
+        type: urn:lms:problem:idempotency-key-reused
+        title: Idempotency key reused
+        status: 422
+        detail: This Idempotency-Key was already used with a different request body.
+        instance: /api/v1/leave-requests
+        code: IDEMPOTENCY_KEY_REUSED
+        request_id: 6f1c0e9a8b7d4c3e
+        errors:
+          Idempotency-Key: [Key reused with a different payload.]
+    ProblemInvalidTransition:
+      summary: Approving a request that is no longer pending
+      value:
+        type: urn:lms:problem:invalid-transition
+        title: Invalid state transition
+        status: 409
+        detail: Request is no longer pending (current status approved).
+        instance: /api/v1/leave-requests/01JD3M7V1Q8Z6K2H5R9T4W0XYZ/approve
+        code: INVALID_TRANSITION
+        request_id: 6f1c0e9a8b7d4c3e
+    ProblemIdempotencyInProgress:
+      summary: First request with this key still running
+      value:
+        type: urn:lms:problem:idempotency-in-progress
+        title: Request in progress
+        status: 409
+        detail: A request with this Idempotency-Key is still being processed.
+        instance: /api/v1/leave-requests
+        code: IDEMPOTENCY_IN_PROGRESS
+        request_id: 6f1c0e9a8b7d4c3e

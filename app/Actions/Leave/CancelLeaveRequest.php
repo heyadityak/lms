@@ -9,6 +9,8 @@ use App\Enums\LeaveStatus;
 use App\Enums\LedgerKind;
 use App\Models\LeaveRequest;
 use App\Models\User;
+use App\Notifications\LeaveRequestCancelled;
+use App\Services\ApproverResolver;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 
@@ -18,6 +20,8 @@ use Illuminate\Support\Facades\Gate;
  */
 final class CancelLeaveRequest
 {
+    public function __construct(private readonly ApproverResolver $approvers) {}
+
     public function handle(LeaveRequest $request, User $actor, ?string $comment = null): LeaveRequest
     {
         return DB::transaction(function () use ($request, $actor, $comment): LeaveRequest {
@@ -35,7 +39,12 @@ final class CancelLeaveRequest
                 ]);
             }
 
-            return LeaveTransition::apply($locked, LeaveStatus::Cancelled, LeaveAction::Cancelled, $actor, $comment, ['cancelled_at' => now()]);
+            $cancelled = LeaveTransition::apply($locked, LeaveStatus::Cancelled, LeaveAction::Cancelled, $actor, $comment, ['cancelled_at' => now()]);
+            // The other party: approver(s) when the owner cancels, else the owner (skipped if inactive, e.g. on deactivation).
+            $recipients = $actor->id === $cancelled->user_id ? $this->approvers->approversFor($cancelled->user) : [$cancelled->user];
+            LeaveTransition::notify($recipients, new LeaveRequestCancelled($cancelled, $actor->name));
+
+            return $cancelled;
         });
     }
 }

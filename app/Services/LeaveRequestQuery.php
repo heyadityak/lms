@@ -44,6 +44,22 @@ final class LeaveRequestQuery
      */
     public static function page(Builder $query, array $filter, ?string $sort, int $size, int $number, bool $withActions = false): LengthAwarePaginator
     {
+        self::filter($query, $filter);
+
+        $sort ??= '-start_date';
+        $query->orderBy(ltrim($sort, '-'), str_starts_with($sort, '-') ? 'desc' : 'asc')->orderBy('id');
+
+        return $query->with(array_merge(['user', 'leaveType', 'decider'], $withActions ? ['actions.actor'] : []))
+            ->paginate($size, ['*'], 'page[number]', $number);
+    }
+
+    /**
+     * @param  Builder<LeaveRequest>  $query
+     * @param  array<string, string>  $filter
+     * @return Builder<LeaveRequest>
+     */
+    public static function filter(Builder $query, array $filter): Builder
+    {
         if (isset($filter['status'])) {
             $query->whereIn('status', explode(',', $filter['status']));
         }
@@ -67,10 +83,6 @@ final class LeaveRequestQuery
             $query->whereHas('user.department', fn (Builder $q) => $q->where('public_id', $filter['department']));
         }
 
-        $sort ??= '-start_date';
-        $query->orderBy(ltrim($sort, '-'), str_starts_with($sort, '-') ? 'desc' : 'asc')->orderBy('id');
-
-        return $query->with(array_merge(['user', 'leaveType', 'decider'], $withActions ? ['actions.actor'] : []))
-            ->paginate($size, ['*'], 'page[number]', $number);
+        return $query;
     }
 }

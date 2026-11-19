@@ -12,5 +12,35 @@ export function serverApi(token: string) {
     });
 }
 
-/** Browser-side client: same paths through the BFF proxy. */
-export const browserApi = createClient<paths>({ baseUrl: '/bff/api' });
+/**
+ * Browser-side client: same paths through the BFF proxy. Absolute base (Request needs one outside
+ * a real browser) and fetch resolved per call, so tests can stub `globalThis.fetch`.
+ */
+export const browserApi = createClient<paths>({
+    baseUrl: `${typeof window === 'undefined' ? '' : window.location.origin}/bff/api`,
+    headers: { Accept: 'application/json' },
+    fetch: (req) => globalThis.fetch(req),
+});
+
+export type Problem = Partial<Schemas['ValidationProblem']>;
+
+/** Non-2xx API answer carrying the problem+json body (API_GUIDELINES §4). */
+export class ApiError extends Error {
+    constructor(
+        readonly status: number,
+        readonly problem: Problem,
+    ) {
+        super(problem.detail ?? problem.title ?? `Request failed (${status})`);
+    }
+}
+
+/** openapi-fetch result → data, or throw ApiError. */
+export async function unwrap<T>(
+    call: Promise<{ data?: T; error?: unknown; response: Response }>,
+): Promise<T> {
+    const { data, error, response } = await call;
+    if (!response.ok || data === undefined) {
+        throw new ApiError(response.status, (error ?? {}) as Problem);
+    }
+    return data;
+}

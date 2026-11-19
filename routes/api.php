@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\ApprovalController;
 use App\Http\Controllers\Api\V1\BrandingController;
+use App\Http\Controllers\Api\V1\DepartmentController;
 use App\Http\Controllers\Api\V1\HolidayController;
 use App\Http\Controllers\Api\V1\LeaveRequestController;
 use App\Http\Controllers\Api\V1\LeaveTypeController;
+use App\Http\Controllers\Api\V1\LedgerEntryController;
 use App\Http\Controllers\Api\V1\MeController;
+use App\Http\Controllers\Api\V1\ReportController;
+use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\ApiDocsController;
 use Illuminate\Support\Facades\Route;
 
@@ -26,9 +30,41 @@ Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-j
     Route::get('/me', [MeController::class, 'show'])->name('me');
     Route::get('/me/balances', [MeController::class, 'balances'])->name('me.balances');
     Route::get('/me/leave-requests', [MeController::class, 'leaveRequests'])->name('me.leave-requests');
+    Route::get('/me/ledger-entries', [LedgerEntryController::class, 'mine'])->name('me.ledger-entries');
 
+    // HR admin (phase 13). Writes are hr_admin via policies (403); reads follow the spec x-roles.
     Route::get('/leave-types', [LeaveTypeController::class, 'index'])->name('leave-types.index');
-    Route::get('/holidays', [HolidayController::class, 'index'])->middleware('module:holidays')->name('holidays.index');
+    Route::post('/leave-types', [LeaveTypeController::class, 'store'])->name('leave-types.store');
+    Route::get('/leave-types/{leaveType}', [LeaveTypeController::class, 'show'])->name('leave-types.show');
+    Route::patch('/leave-types/{leaveType}', [LeaveTypeController::class, 'update'])->name('leave-types.update');
+
+    Route::middleware('module:holidays')->group(function (): void {
+        Route::get('/holidays', [HolidayController::class, 'index'])->name('holidays.index');
+        Route::post('/holidays', [HolidayController::class, 'store'])->name('holidays.store');
+        Route::get('/holidays/{holiday}', [HolidayController::class, 'show'])->name('holidays.show');
+        Route::patch('/holidays/{holiday}', [HolidayController::class, 'update'])->name('holidays.update');
+        Route::delete('/holidays/{holiday}', [HolidayController::class, 'destroy'])->name('holidays.destroy');
+    });
+
+    Route::get('/departments', [DepartmentController::class, 'index'])->name('departments.index');
+    Route::post('/departments', [DepartmentController::class, 'store'])->name('departments.store');
+    Route::get('/departments/{department}', [DepartmentController::class, 'show'])->name('departments.show');
+    Route::patch('/departments/{department}', [DepartmentController::class, 'update'])->name('departments.update');
+    Route::delete('/departments/{department}', [DepartmentController::class, 'destroy'])->name('departments.destroy');
+
+    Route::get('/users', [UserController::class, 'index'])->name('users.index');
+    Route::get('/users/{user}', [UserController::class, 'show'])->name('users.show');
+    Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
+    Route::post('/users/{user}/deactivate', [UserController::class, 'deactivate'])->name('users.deactivate');
+    Route::post('/users/{user}/activate', [UserController::class, 'activate'])->name('users.activate');
+    Route::get('/users/{user}/balances', [UserController::class, 'balances'])->name('users.balances');
+    Route::get('/users/{user}/ledger-entries', [LedgerEntryController::class, 'index'])->name('users.ledger-entries.index');
+    Route::post('/users/{user}/ledger-entries', [LedgerEntryController::class, 'store'])->name('users.ledger-entries.store');
+
+    Route::middleware(['module:reports', 'role:hr_admin'])->group(function (): void {
+        Route::get('/reports/leave-requests', [ReportController::class, 'leaveRequests'])->name('reports.leave-requests');
+        Route::get('/reports/balances', [ReportController::class, 'balances'])->name('reports.balances');
+    });
 
     Route::get('/leave-requests', [LeaveRequestController::class, 'index'])->name('leave-requests.index');
     Route::post('/leave-requests', [LeaveRequestController::class, 'store'])->middleware('idempotent')->name('leave-requests.store');

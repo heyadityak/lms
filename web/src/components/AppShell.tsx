@@ -1,93 +1,202 @@
 'use client';
 
 import {
+    AppstoreOutlined,
     BellOutlined,
     CalendarOutlined,
     CheckSquareOutlined,
-    DashboardOutlined,
-    FileTextOutlined,
+    DownOutlined,
     LogoutOutlined,
+    MenuOutlined,
+    ScheduleOutlined,
     SettingOutlined,
-    UserOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd';
-import type { MenuProps } from 'antd';
+import { Badge, Button, Drawer, Dropdown, Grid, Layout, Space, Typography, theme } from 'antd';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useRef, type ReactNode } from 'react';
-import { navItems, selectedKey, type NavItem, type NavUser } from './nav';
+import { useRef, useState, type ReactNode } from 'react';
+import { usePendingApprovalCount } from '@/lib/queries';
+import { FIGMA, activeNavColor } from '@/theme/brand';
+import { navItems, selectedKey, type NavItem } from './nav';
+import { AppProviders, type ShellUser } from './providers';
+import { InitialsAvatar, isApprover } from './ui';
 
 const ICONS: Record<string, ReactNode> = {
-    '/': <DashboardOutlined />,
-    '/leave-requests': <FileTextOutlined />,
+    '/': <AppstoreOutlined />,
+    '/leave-requests': <ScheduleOutlined />,
     '/approvals': <CheckSquareOutlined />,
     '/holidays': <CalendarOutlined />,
     '/admin': <SettingOutlined />,
 };
 
-function toMenu(items: NavItem[]): MenuProps['items'] {
-    return items.map((item) =>
-        item.children
-            ? {
-                  key: item.key,
-                  icon: ICONS[item.key],
-                  label: item.label,
-                  children: toMenu(item.children),
-              }
-            : {
-                  key: item.key,
-                  icon: ICONS[item.key],
-                  label: <Link href={item.key}>{item.label}</Link>,
-              },
-    );
-}
-
 export interface AppShellProps {
-    user: NavUser & { name: string };
-    brand: { name: string; logo_url: string; modules: readonly string[] };
+    user: ShellUser;
+    brand: {
+        name: string;
+        logo_url: string;
+        primary_color: string;
+        primary_contrast: string;
+        modules: readonly string[];
+    };
     children: ReactNode;
 }
 
-/** Layout per Figma Dashboard (484:2): Sider nav + Header (logo, notifications, user menu). */
+/** Figma shell (484:2): 80 px icon-over-label Sider, 64 px Header; Drawer nav below `md`. */
 export function AppShell({ user, brand, children }: AppShellProps) {
-    const pathname = usePathname();
+    return (
+        <AppProviders user={user} modules={brand.modules}>
+            <Shell user={user} brand={brand}>
+                {children}
+            </Shell>
+        </AppProviders>
+    );
+}
+
+function NavLinks({
+    items,
+    active,
+    color,
+    activeBg,
+    onNavigate,
+}: {
+    items: NavItem[];
+    active?: string;
+    color: string;
+    activeBg: string;
+    onNavigate?: () => void;
+}) {
+    return (
+        <nav aria-label="Main navigation" className="lms-nav">
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {items.map((item) => {
+                    const current = item.key === active;
+                    return (
+                        <li key={item.key}>
+                            <Link
+                                href={item.key}
+                                onClick={onNavigate}
+                                aria-current={current ? 'page' : undefined}
+                                style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 6,
+                                    height: 84,
+                                    color,
+                                    background: current ? activeBg : 'transparent',
+                                    fontSize: 12,
+                                    fontWeight: current ? 700 : 400,
+                                    textDecoration: 'none',
+                                }}
+                            >
+                                <span style={{ fontSize: 24 }} aria-hidden>
+                                    {ICONS[item.key]}
+                                </span>
+                                {item.label}
+                            </Link>
+                        </li>
+                    );
+                })}
+            </ul>
+        </nav>
+    );
+}
+
+function Shell({ user, brand, children }: Omit<AppShellProps, 'children'> & { children: ReactNode }) {
+    const screens = Grid.useBreakpoint();
+    const mobile = screens.md === false; // undefined during SSR → desktop layout
+    const [drawerOpen, setDrawerOpen] = useState(false);
     const logoutForm = useRef<HTMLFormElement>(null);
+    const pathname = usePathname();
+    const { token } = theme.useToken();
+    const approver = isApprover(user.role);
+    const pending = usePendingApprovalCount(approver);
+
     const items = navItems(user, brand.modules);
-    const current = selectedKey(items, pathname);
+    const key = selectedKey(items, pathname);
+    const active = key?.startsWith('/admin') ? '/admin' : key;
+    const nav = (onNavigate?: () => void) => (
+        <NavLinks
+            items={items}
+            active={active}
+            color={brand.primary_contrast}
+            activeBg={activeNavColor(token.colorPrimary)}
+            onNavigate={onNavigate}
+        />
+    );
+    const logo = (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0' }}>
+            {/* eslint-disable-next-line @next/next/no-img-element -- runtime brand asset from Laravel */}
+            <img
+                src={brand.logo_url}
+                alt={brand.name}
+                width={40}
+                height={40}
+                style={{ borderRadius: '50%', background: '#FFFFFF', objectFit: 'contain' }}
+            />
+        </div>
+    );
 
     return (
-        <Layout hasSider style={{ minHeight: '100vh' }}>
-            <Layout.Sider breakpoint="lg" collapsible theme="light" aria-label="Main navigation">
-                <Space style={{ padding: 16 }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element -- runtime brand asset from Laravel */}
-                    <img src={brand.logo_url} alt={brand.name} height={32} />
-                </Space>
-                <Menu
-                    mode="inline"
-                    items={toMenu(items)}
-                    selectedKeys={current ? [current] : []}
-                    defaultOpenKeys={current?.startsWith('/admin') ? ['/admin'] : []}
-                />
-            </Layout.Sider>
+        <Layout hasSider={!mobile} style={{ minHeight: '100vh' }}>
+            {!mobile && (
+                <Layout.Sider
+                    width={80}
+                    style={{ position: 'sticky', top: 0, height: '100vh', overflowY: 'auto' }}
+                >
+                    {logo}
+                    {nav()}
+                </Layout.Sider>
+            )}
+            <Drawer
+                open={mobile && drawerOpen}
+                onClose={() => setDrawerOpen(false)}
+                placement="left"
+                size={120}
+                title="Menu"
+                styles={{ body: { padding: 0, background: token.colorPrimary } }}
+            >
+                {logo}
+                {nav(() => setDrawerOpen(false))}
+            </Drawer>
             <Layout>
                 <Layout.Header
                     style={{
-                        background: 'var(--ant-color-bg-container)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        paddingInline: 24,
+                        boxShadow: FIGMA.headerShadow,
+                        position: 'sticky',
+                        top: 0,
+                        zIndex: 10,
                     }}
                 >
-                    <Typography.Text strong>{brand.name}</Typography.Text>
-                    <Space size="medium">
-                        {/* shortcut: notifications are a placeholder until an endpoint backs them (UI_GUIDELINES §3). */}
-                        <Button
-                            type="text"
-                            icon={<BellOutlined />}
-                            aria-label="Notifications"
-                            disabled
-                        />
+                    <Space>
+                        {mobile && (
+                            <Button
+                                type="text"
+                                icon={<MenuOutlined />}
+                                aria-label="Open navigation"
+                                onClick={() => setDrawerOpen(true)}
+                            />
+                        )}
+                        <Typography.Text strong style={{ color: FIGMA.heading, fontSize: 16 }}>
+                            {brand.name}
+                        </Typography.Text>
+                    </Space>
+                    <Space size="large">
+                        {approver && (
+                            <Link
+                                href="/approvals"
+                                aria-label={`${pending.data ?? 0} pending approvals`}
+                                style={{ color: token.colorPrimary, fontSize: 22, display: 'flex' }}
+                            >
+                                <Badge count={pending.data ?? 0} size="small">
+                                    <BellOutlined style={{ fontSize: 22, color: token.colorPrimary }} />
+                                </Badge>
+                            </Link>
+                        )}
                         <Dropdown
                             trigger={['click']}
                             menu={{
@@ -99,17 +208,31 @@ export function AppShell({ user, brand, children }: AppShellProps) {
                                 },
                             }}
                         >
-                            <Button type="text" aria-label={`User menu for ${user.name}`}>
+                            <Button
+                                type="text"
+                                aria-label={`User menu for ${user.name}`}
+                                style={{ height: 48 }}
+                            >
                                 <Space>
-                                    <Avatar size="small" icon={<UserOutlined />} />
-                                    {user.name}
+                                    <InitialsAvatar name={user.name} />
+                                    {!mobile && <span style={{ color: FIGMA.heading }}>{user.name}</span>}
+                                    <DownOutlined style={{ color: FIGMA.heading }} />
                                 </Space>
                             </Button>
                         </Dropdown>
                     </Space>
                     <form ref={logoutForm} method="post" action="/bff/logout" hidden />
                 </Layout.Header>
-                <Layout.Content style={{ margin: 24 }}>{children}</Layout.Content>
+                <Layout.Content
+                    style={{
+                        padding: mobile ? 16 : '30px 33px',
+                        width: '100%',
+                        maxWidth: 1440,
+                        marginInline: 'auto',
+                    }}
+                >
+                    <main>{children}</main>
+                </Layout.Content>
             </Layout>
         </Layout>
     );

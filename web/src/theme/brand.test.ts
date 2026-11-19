@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_BRANDING, themeFromBranding } from './brand';
+import { DEFAULT_BRANDING, FIGMA, activeNavColor, themeFromBranding } from './brand';
 
 describe('themeFromBranding', () => {
     it('maps brand colours to antd tokens', () => {
@@ -13,9 +13,12 @@ describe('themeFromBranding', () => {
             colorLink: '#112233',
             colorInfo: '#112233',
             colorSuccess: '#445566',
-            borderRadius: 6,
+            borderRadius: 4,
+            controlHeight: 40,
+            colorBgLayout: FIGMA.page,
         });
         expect(theme.components?.Button?.primaryColor).toBe('#000000');
+        expect(theme.components?.Layout?.siderBg).toBe('#112233');
     });
 
     it('falls back to the default brand for invalid or missing colours', () => {
@@ -26,6 +29,14 @@ describe('themeFromBranding', () => {
         expect(theme.token?.colorPrimary).toBe(DEFAULT_BRANDING.primary_color);
         expect(theme.token?.colorSuccess).toBe(DEFAULT_BRANDING.accent_color);
         expect(theme.components?.Button?.primaryColor).toBe(DEFAULT_BRANDING.primary_contrast);
-        expect(themeFromBranding(null).token?.colorPrimary).toBe(DEFAULT_BRANDING.primary_color);
+        expect(themeFromBranding(null).token?.colorPrimary).toBe(FIGMA.primary);
+    });
+});
+
+describe('activeNavColor', () => {
+    it('is the Figma navy for the default primary and a darker shade otherwise', () => {
+        expect(activeNavColor('#3a5fbe')).toBe(FIGMA.navy);
+        expect(activeNavColor('#FF8000')).toBe('#994d00');
+        expect(activeNavColor('#000000')).toBe('#000000');
     });
 });

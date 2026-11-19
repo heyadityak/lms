@@ -9,6 +9,8 @@ use App\Enums\LeaveStatus;
 use App\Exceptions\LeaveRuleViolation;
 use App\Models\LeaveRequest;
 use App\Models\User;
+use App\Notifications\LeaveRequestSubmitted;
+use App\Services\ApproverResolver;
 use App\Services\LeaveRequestValidator;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -16,7 +18,7 @@ use Illuminate\Support\Facades\DB;
 /** UC-E5: rules V1–V8 via LeaveRequestValidator (shared with the preview), server-computed days. */
 final class SubmitLeaveRequest
 {
-    public function __construct(private readonly LeaveRequestValidator $validator) {}
+    public function __construct(private readonly LeaveRequestValidator $validator, private readonly ApproverResolver $approvers) {}
 
     /** @param  array{leave_type_id: string, start_date: string, end_date: string, day_part?: string|null, reason: string, handover_note?: string|null}  $data */
     public function handle(User $user, array $data): LeaveRequest
@@ -39,7 +41,8 @@ final class SubmitLeaveRequest
                 $request->forceFill(['user_id' => $user->id, 'days' => $checked['days'], 'status' => LeaveStatus::Pending])->save();
                 $request->actions()->create(['actor_id' => $user->id, 'action' => LeaveAction::Submitted, 'from_status' => null, 'to_status' => LeaveStatus::Pending]);
 
-                // shortcut: LeaveRequestSubmitted notification is phase 8 (module `notifications`), dispatch afterCommit there.
+                LeaveTransition::notify($this->approvers->approversFor($user), new LeaveRequestSubmitted($request));
+
                 return $request;
             });
         } catch (QueryException $e) {

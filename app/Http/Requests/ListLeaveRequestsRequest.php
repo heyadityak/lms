@@ -12,6 +12,7 @@ final class ListLeaveRequestsRequest extends FormRequest
     private const FILTERS = [
         'api.v1.leave-requests.index' => 'status,year,from,to,user,leave_type,department',
         'api.v1.approvals' => 'status,department',
+        'api.v1.reports.leave-requests' => 'status,from,to,leave_type,department',
     ];
 
     public function authorize(): bool

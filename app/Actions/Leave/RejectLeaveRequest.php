@@ -9,6 +9,7 @@ use App\Enums\LeaveStatus;
 use App\Exceptions\LeaveRuleViolation;
 use App\Models\LeaveRequest;
 use App\Models\User;
+use App\Notifications\LeaveRequestDecided;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 
@@ -28,9 +29,12 @@ final class RejectLeaveRequest
                 throw new AuthorizationException('You cannot reject your own leave request.');
             }
 
-            return LeaveTransition::apply($locked, LeaveStatus::Rejected, LeaveAction::Rejected, $actor, $comment, [
+            $decided = LeaveTransition::apply($locked, LeaveStatus::Rejected, LeaveAction::Rejected, $actor, $comment, [
                 'decided_by' => $actor->id, 'decided_at' => now(), 'decision_comment' => $comment,
             ]);
+            LeaveTransition::notify([$decided->user], new LeaveRequestDecided($decided));
+
+            return $decided;
         });
     }
 }

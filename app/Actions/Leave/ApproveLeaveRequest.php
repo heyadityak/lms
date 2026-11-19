@@ -10,6 +10,7 @@ use App\Enums\LedgerKind;
 use App\Exceptions\LeaveRuleViolation;
 use App\Models\LeaveRequest;
 use App\Models\User;
+use App\Notifications\LeaveRequestDecided;
 use App\Services\LeaveBalanceService;
 use App\Services\LeaveRequestValidator;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -42,9 +43,12 @@ final class ApproveLeaveRequest
                 ]);
             }
 
-            return LeaveTransition::apply($locked, LeaveStatus::Approved, LeaveAction::Approved, $actor, $comment, [
+            $decided = LeaveTransition::apply($locked, LeaveStatus::Approved, LeaveAction::Approved, $actor, $comment, [
                 'decided_by' => $actor->id, 'decided_at' => now(), 'decision_comment' => $comment,
             ]);
+            LeaveTransition::notify([$decided->user], new LeaveRequestDecided($decided));
+
+            return $decided;
         });
     }
 }

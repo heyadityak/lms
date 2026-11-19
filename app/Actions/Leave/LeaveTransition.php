@@ -6,9 +6,13 @@ namespace App\Actions\Leave;
 
 use App\Enums\LeaveAction;
 use App\Enums\LeaveStatus;
+use App\Enums\Module;
 use App\Exceptions\InvalidTransition;
 use App\Models\LeaveRequest;
 use App\Models\User;
+use App\Notifications\LeaveRequestNotification;
+use App\Support\Modules;
+use Illuminate\Support\Facades\Notification;
 
 /** Shared steps of approve/reject/cancel. Call inside DB::transaction. */
 final class LeaveTransition
@@ -34,7 +38,20 @@ final class LeaveTransition
             'comment' => $comment === '' ? null : $comment,
         ]);
 
-        // shortcut: LeaveRequestDecided/Cancelled notifications are phase 8, dispatched afterCommit there.
         return $locked;
+    }
+
+    /**
+     * UC-S2: queue a leave mail to the active recipients, only with module `notifications` on.
+     * The notification is afterCommit, so a rolled-back transition sends nothing.
+     *
+     * @param  iterable<User>  $recipients
+     */
+    public static function notify(iterable $recipients, LeaveRequestNotification $notification): void
+    {
+        if (! app(Modules::class)->enabled(Module::Notifications)) {
+            return;
+        }
+        Notification::send(collect($recipients)->filter(fn (User $u): bool => $u->is_active)->values(), $notification);
     }
 }

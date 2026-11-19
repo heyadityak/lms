@@ -9,6 +9,7 @@ use App\Http\Resources\BalanceResource;
 use App\Http\Resources\LeaveRequestResource;
 use App\Http\Resources\UserResource;
 use App\Models\LeaveRequest;
+use App\Models\User;
 use App\Services\LeaveBalanceService;
 use App\Services\LeaveRequestQuery;
 use App\Support\LeaveYear;
@@ -28,9 +29,15 @@ final class MeController
 
     public function balances(Request $request, LeaveBalanceService $balances): AnonymousResourceCollection
     {
+        return self::balanceList($request, $request->user(), $balances);
+    }
+
+    /** openapi `BalanceList` for /me/balances and /users/{id}/balances. */
+    public static function balanceList(Request $request, User $user, LeaveBalanceService $balances): AnonymousResourceCollection
+    {
         $year = (int) ($request->validate(['filter' => ['sometimes', 'array:year'], 'filter.year' => ['sometimes', 'integer', 'between:2000,2100']])['filter']['year'] ?? LeaveYear::current());
 
-        return BalanceResource::collection($balances->summary($request->user(), $year))->additional([
+        return BalanceResource::collection($balances->summary($user, $year))->additional([
             'meta' => ['year' => $year, 'leave_year_start' => LeaveYear::start($year)->toDateString(), 'leave_year_end' => LeaveYear::end($year)->toDateString()],
             'links' => new stdClass,
         ]);

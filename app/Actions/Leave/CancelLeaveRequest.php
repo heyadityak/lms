@@ -10,6 +10,7 @@ use App\Enums\LedgerKind;
 use App\Models\LeaveRequest;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 
 /**
  * UC-E7 / UC-H6: pending|approved → cancelled. Cancelling an approved request writes a `reversal` for the full debit.
@@ -21,6 +22,8 @@ final class CancelLeaveRequest
     {
         return DB::transaction(function () use ($request, $actor, $comment): LeaveRequest {
             $locked = LeaveTransition::lock($request, LeaveStatus::Cancelled);
+            // Re-run the policy on the locked row: an approval committed after the route-level check may have started the leave.
+            Gate::forUser($actor)->authorize('cancel', $locked);
 
             $debit = $locked->status === LeaveStatus::Approved
                 ? $locked->ledgerEntries()->where('kind', LedgerKind::Debit)->first()

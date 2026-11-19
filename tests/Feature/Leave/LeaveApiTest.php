@@ -106,7 +106,7 @@ final class LeaveApiTest extends TestCase
 
         $id = $this->apply($this->alice)->json('data.id');
         $otherManager = User::factory()->manager()->create();
-        $this->assertProblem($this->api($otherManager)->postJson("/api/v1/leave-requests/{$id}/approve"), 403, 'FORBIDDEN', '/leave-requests/{leaveRequestId}/approve');
+        $this->assertProblem($this->api($otherManager)->postJson("/api/v1/leave-requests/{$id}/approve"), 404, 'NOT_FOUND', '/leave-requests/{leaveRequestId}/approve');
         $this->assertProblem($this->api($this->alice)->postJson("/api/v1/leave-requests/{$id}/approve"), 403, 'FORBIDDEN', '/leave-requests/{leaveRequestId}/approve');
         $this->api($this->carol)->postJson("/api/v1/leave-requests/{$id}/approve")->assertOk();
     }

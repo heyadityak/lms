@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Log;
 /**
  * First-login provisioning + role sync from verified Keycloak claims (D-20, D-29).
  * Keycloak wins: users.role (base role) and users.is_admin are caches refreshed on every login/API call.
- * Does not check is_active; callers refuse inactive users (web 403, API 401).
+ * An existing inactive user is returned untouched (no writes, no grant, USE_CASES §3.9); callers refuse it (web 403, API 401).
  */
 final class KeycloakUserProvisioner
 {
@@ -47,6 +47,9 @@ final class KeycloakUserProvisioner
             if ($user->keycloak_sub !== null) {
                 Log::warning('auth.user_relinked', ['user_id' => $user->id, 'old_sub' => $user->keycloak_sub, 'new_sub' => $sub]);
             }
+        }
+        if ($user !== null && ! $user->is_active) {
+            return $user;
         }
         $user ??= new User;
 
@@ -96,11 +99,16 @@ final class KeycloakUserProvisioner
 
     private static function dateClaim(mixed $value): ?string
     {
-        if (! is_string($value) || preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
+        if ($value === null) {
             return null;
         }
-        $date = CarbonImmutable::createFromFormat('!Y-m-d', $value);
+        // \z, not $: "$" also matches before a trailing newline, which createFromFormat then rejects (500).
+        if (is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}\z/', $value) === 1
+            && CarbonImmutable::createFromFormat('!Y-m-d', $value)?->toDateString() === $value) {
+            return $value;
+        }
+        Log::warning('auth.date_of_joining_claim_ignored', ['value' => is_scalar($value) ? (string) $value : get_debug_type($value)]);
 
-        return $date !== false && $date->toDateString() === $value ? $value : null;
+        return null;
     }
 }

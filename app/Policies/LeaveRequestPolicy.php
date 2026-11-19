@@ -34,9 +34,12 @@ final class LeaveRequestPolicy
         return $user->is_active;
     }
 
-    /** Approve or reject: active direct manager or hr_admin, never the requester. */
+    /** Approve or reject: active direct manager (role manager) or hr_admin, never the requester. Invisible → 404. */
     public function decide(User $user, LeaveRequest $request): Response
     {
+        if (($visible = $this->view($user, $request))->denied()) {
+            return $visible;
+        }
         if ($user->id === $request->user_id) {
             return Response::deny('You cannot decide on your own leave request.');
         }
@@ -44,9 +47,12 @@ final class LeaveRequestPolicy
         return $this->approvers->canDecide($user, $request) ? Response::allow() : Response::deny('Only the direct manager or HR can decide on this request.');
     }
 
-    /** Owner: until the approved leave starts. hr_admin: any time, except their own started leave. */
+    /** Owner: until the approved leave starts. hr_admin: any time, except their own started leave. Invisible → 404. */
     public function cancel(User $user, LeaveRequest $request): Response
     {
+        if (($visible = $this->view($user, $request))->denied()) {
+            return $visible;
+        }
         $started = $request->status === LeaveStatus::Approved && $request->start_date->toDateString() <= now()->toDateString();
 
         if ($user->id === $request->user_id) {

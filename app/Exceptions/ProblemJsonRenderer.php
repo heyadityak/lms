@@ -58,6 +58,8 @@ final class ProblemJsonRenderer
             $headers = $e->getHeaders();
             // abort()/framework messages are developer-authored; 5xx detail is never exposed.
             $detail = $status < 500 && $e->getMessage() !== '' ? $e->getMessage() : null;
+            // One fixed 404 body: "missing" and "hidden" ids must be indistinguishable, no model class names (API_GUIDELINES §5).
+            $detail = $status === 404 ? 'The requested resource was not found.' : $detail;
         } else {
             // Never leak internals, whatever APP_DEBUG says (API_GUIDELINES §4). The handler still reports $e.
             $status = 500;

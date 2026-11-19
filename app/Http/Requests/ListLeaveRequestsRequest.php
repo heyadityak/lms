@@ -36,7 +36,7 @@ final class ListLeaveRequestsRequest extends FormRequest
             'sort' => ['sometimes', 'in:start_date,-start_date,created_at,-created_at,days,-days'],
             'include' => ['sometimes', 'string', 'regex:/^(actions|user|leave_type)(,(actions|user|leave_type))*$/'],
             'page' => ['sometimes', 'array:number,size'],
-            'page.number' => ['sometimes', 'integer', 'min:1'],
+            'page.number' => ['sometimes', 'integer', 'between:1,10000'], // bound keeps OFFSET far from int overflow
             'page.size' => ['sometimes', 'integer', 'between:1,100'],
         ];
     }

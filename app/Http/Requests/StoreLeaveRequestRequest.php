@@ -6,6 +6,7 @@ namespace App\Http\Requests;
 
 use App\Enums\DayPart;
 use App\Models\LeaveRequest;
+use App\Rules\PlainText;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -25,8 +26,8 @@ final class StoreLeaveRequestRequest extends FormRequest
             'start_date' => ['required', 'date_format:Y-m-d'],
             'end_date' => ['required', 'date_format:Y-m-d'],
             'day_part' => ['required', Rule::enum(DayPart::class)],
-            'reason' => ['required', 'string', 'min:3', 'max:1000'],
-            'handover_note' => ['nullable', 'string', 'max:2000'],
+            'reason' => ['required', 'string', 'min:3', 'max:1000', new PlainText],
+            'handover_note' => ['nullable', 'string', 'max:2000', new PlainText],
         ];
     }
 }

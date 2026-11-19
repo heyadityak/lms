@@ -11,7 +11,6 @@ use Database\Seeders\LeaveTypeSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
-use PHPUnit\Framework\Attributes\Group;
 use Tests\Support\FakeKeycloak;
 use Tests\Support\ValidatesOpenApi;
 use Tests\TestCase;
@@ -90,7 +89,6 @@ final class JwtClaimProbeTest extends TestCase
      * KeycloakUserProvisioner::dateClaim: `$` in /^\d{4}-\d{2}-\d{2}$/ also matches before a trailing "\n", then
      * CarbonImmutable::createFromFormat throws "Trailing data" → 500 on every API call (and web login) for that user.
      */
-    #[Group('known-bug')]
     public function test_joining_date_claim_with_trailing_newline_is_ignored_not_a_500(): void
     {
         $this->me("2026-07-01\n")->assertOk()->assertJsonPath('data.date_of_joining', null);
@@ -119,7 +117,6 @@ final class JwtClaimProbeTest extends TestCase
     }
 
     /** USE_CASES §3.9: a deactivated user is refused and excluded from accrual; the refused call must not write. */
-    #[Group('known-bug')]
     public function test_deactivated_users_token_has_no_provisioning_side_effects(): void
     {
         $user = User::factory()->inactive()->create(['keycloak_sub' => 'sub-new', 'email' => 'sub-new@example.test', 'date_of_joining' => null, 'last_login_at' => null]);

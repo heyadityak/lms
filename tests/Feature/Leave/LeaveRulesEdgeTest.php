@@ -15,7 +15,6 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Testing\TestResponse;
-use PHPUnit\Framework\Attributes\Group;
 use Tests\Support\ValidatesOpenApi;
 use Tests\TestCase;
 
@@ -241,7 +240,6 @@ final class LeaveRulesEdgeTest extends TestCase
      * Policy `cancel` reads the unlocked route-bound row; the Action re-checks only the state machine under the lock.
      * A pending (backdated) request approved between the two lets the owner cancel leave that has already started.
      */
-    #[Group('known-bug')]
     public function test_owner_cancel_racing_an_approval_cannot_cancel_started_leave(): void
     {
         $id = $this->applyType($this->alice, 'SL', '2026-11-12')->assertCreated()->json('data.id');
@@ -301,7 +299,6 @@ final class LeaveRulesEdgeTest extends TestCase
     }
 
     /** API_GUIDELINES §5: invisible resource → 404 "so ids cannot be probed"; 403 only for visible resources. */
-    #[Group('known-bug')]
     public function test_actions_on_an_invisible_request_are_404_not_403(): void
     {
         $id = $this->applyType($this->alice, 'EL', '2026-12-01')->json('data.id');
@@ -314,7 +311,6 @@ final class LeaveRulesEdgeTest extends TestCase
     }
 
     /** openapi x-roles for approve/reject = [manager, hr_admin]; an `employee` set as someone's manager_id must not decide. */
-    #[Group('known-bug')]
     public function test_employee_role_user_set_as_manager_cannot_approve(): void
     {
         $lead = User::factory()->create(); // base role employee

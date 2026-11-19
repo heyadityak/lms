@@ -11,7 +11,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
-use PHPUnit\Framework\Attributes\Group;
 use Tests\Feature\Leave\LeaveTestHelpers;
 use Tests\Support\ValidatesOpenApi;
 use Tests\TestCase;
@@ -85,7 +84,6 @@ final class LeaveApiContractTest extends TestCase
     }
 
     /** API_GUIDELINES §5: "404 … so ids cannot be probed". The body must not tell "exists but hidden" from "does not exist". */
-    #[Group('known-bug')]
     public function test_404_body_does_not_reveal_whether_an_id_exists_or_internal_class_names(): void
     {
         $real = $this->apply($this->alice)->assertCreated()->json('data.id');
@@ -175,7 +173,6 @@ final class LeaveApiContractTest extends TestCase
     }
 
     /** PageNumber has no maximum in the spec: a page past the end is an empty page, never page 1 again (int overflow in OFFSET). */
-    #[Group('known-bug')]
     public function test_huge_page_number_does_not_wrap_around_to_the_first_page(): void
     {
         $this->apply($this->alice)->assertCreated();
@@ -247,7 +244,6 @@ final class LeaveApiContractTest extends TestCase
     }
 
     /** pdo_pgsql cuts strings at U+0000: the API answers 201 echoing "Trip\0home" while the DB stores "Trip". Refuse it (422). */
-    #[Group('known-bug')]
     public function test_nul_byte_in_reason_is_refused_not_silently_truncated(): void
     {
         $this->problem($this->apply($this->alice, ['reason' => "Trip\u{0000}home"]), 422, 'VALIDATION_FAILED', '/leave-requests', 'post');

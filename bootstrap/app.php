@@ -8,6 +8,7 @@ use App\Http\Middleware\EnsureAdmin;
 use App\Http\Middleware\EnsureIdempotency;
 use App\Http\Middleware\EnsureModuleEnabled;
 use App\Http\Middleware\EnsureRole;
+use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Middleware\RequestId;
 use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
@@ -38,7 +39,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin' => EnsureAdmin::class,
             'module' => EnsureModuleEnabled::class,
             'idempotent' => EnsureIdempotency::class,
-            // Domain adds: 'active' => EnsureUserIsActive.
+            'active' => EnsureUserIsActive::class,
         ]);
         // Auth is in Laravel's priority list and would otherwise run first: a disabled module must 404, not 401.
         $middleware->prependToPriorityList(AuthenticatesRequests::class, EnsureModuleEnabled::class);

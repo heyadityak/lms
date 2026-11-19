@@ -17,10 +17,15 @@
             <span>{{ $brand->name }}</span>
         </a>
         @auth
-            {{-- Leave/approval/admin links (with @can) arrive with their routes in phases 6, 8 and 9. --}}
+            {{-- Admin links (with @can) arrive with their routes in phases 8 and 9. --}}
             <nav aria-label="Main">
                 <ul>
                     <li><a href="{{ url('/') }}" @if (request()->is('/')) aria-current="page" @endif>Dashboard</a></li>
+                    <li><a href="{{ route('leave-requests.create') }}" @if (request()->routeIs('leave-requests.create')) aria-current="page" @endif>Apply</a></li>
+                    <li><a href="{{ route('leave-requests.index') }}" @if (request()->routeIs('leave-requests.index')) aria-current="page" @endif>My requests</a></li>
+                    @can('viewApprovals', App\Models\LeaveRequest::class)
+                        <li><a href="{{ route('approvals.index') }}" @if (request()->routeIs('approvals.index')) aria-current="page" @endif>Approvals</a></li>
+                    @endcan
                     @module('holidays')
                         <li><a href="{{ url('/holidays') }}" @if (request()->is('holidays')) aria-current="page" @endif>Holidays</a></li>
                     @endmodule
@@ -35,6 +40,19 @@
         @endauth
     </header>
     <main id="main" tabindex="-1">
+        @if (session('status'))
+            <p class="notice" role="status">{{ session('status') }}</p>
+        @endif
+        @if ($errors->any())
+            <div class="errors" role="alert">
+                <h2>Please fix the following</h2>
+                <ul>
+                    @foreach ($errors->all() as $message)
+                        <li>{{ $message }}</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
         @yield('content')
     </main>
 </body>

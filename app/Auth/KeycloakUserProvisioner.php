@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Auth;
 
+use App\Actions\Accrual\GrantInitialEntitlement;
+use App\Enums\Role;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Log;
@@ -16,10 +19,7 @@ use Illuminate\Support\Facades\Log;
  */
 final class KeycloakUserProvisioner
 {
-    /** Base realm roles, highest first (D-29). Domain may replace this with the Role enum. */
-    public const BASE_ROLES = ['hr_admin', 'manager', 'employee'];
-
-    public const ADMIN_ROLE = 'admin';
+    public function __construct(private readonly GrantInitialEntitlement $grantInitialEntitlement) {}
 
     /**
      * @param  array<string, mixed>  $claims  verified token claims: sub, email, email_verified, name, realm_access.roles
@@ -29,7 +29,7 @@ final class KeycloakUserProvisioner
     public function provision(array $claims): User
     {
         $roles = (array) data_get($claims, 'realm_access.roles', []);
-        $base = self::baseRole($roles);
+        $base = Role::fromKeycloakRoles($roles);
         $sub = (string) ($claims['sub'] ?? '');
         $email = mb_strtolower((string) ($claims['email'] ?? ''));
 
@@ -55,8 +55,18 @@ final class KeycloakUserProvisioner
             'email' => $email,
             'name' => (string) ($claims['name'] ?? $claims['preferred_username'] ?? $email),
             'role' => $base,
-            'is_admin' => in_array(self::ADMIN_ROLE, $roles, true),
+            'is_admin' => in_array(Role::Admin->value, $roles, true),
         ]);
+        // Throttled so API calls (provisioned on every request) do not write the row each time.
+        if ($user->last_login_at === null || $user->last_login_at->lt(now()->subMinutes(5))) {
+            $user->forceFill(['last_login_at' => now()]);
+        }
+        // Optional Keycloak user-attribute mapper; only fills an unknown joining date (HR owns it afterwards, §3.7).
+        $joined = self::dateClaim($claims['date_of_joining'] ?? null);
+        $grant = $user->date_of_joining === null && $joined !== null;
+        if ($grant) {
+            $user->forceFill(['date_of_joining' => $joined]);
+        }
 
         if (! $user->isDirty()) {
             return $user;
@@ -75,20 +85,22 @@ final class KeycloakUserProvisioner
             throw $e;
         }
 
-        Log::info($created ? 'auth.user_provisioned' : 'auth.user_synced', ['user_id' => $user->id, 'role' => $base, 'is_admin' => $user->is_admin]);
+        if ($grant) {
+            $this->grantInitialEntitlement->handle($user);
+        }
+
+        Log::info($created ? 'auth.user_provisioned' : 'auth.user_synced', ['user_id' => $user->id, 'role' => $base->value, 'is_admin' => $user->is_admin]);
 
         return $user;
     }
 
-    /** @param  array<int, mixed>  $roles */
-    public static function baseRole(array $roles): ?string
+    private static function dateClaim(mixed $value): ?string
     {
-        foreach (self::BASE_ROLES as $role) {
-            if (in_array($role, $roles, true)) {
-                return $role;
-            }
+        if (! is_string($value) || preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
+            return null;
         }
+        $date = CarbonImmutable::createFromFormat('!Y-m-d', $value);
 
-        return null;
+        return $date !== false && $date->toDateString() === $value ? $value : null;
     }
 }

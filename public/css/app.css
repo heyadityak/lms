@@ -54,3 +54,36 @@ button, .button {
 }
 
 main { max-width: 72rem; margin: 0 auto; padding: 1.5rem; }
+
+h1 { margin-top: 0; }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+caption { text-align: left; font-weight: 600; padding-bottom: .5rem; }
+th, td { padding: .5rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+main button, main .button-primary, main .button-secondary { border-color: var(--brand-primary); }
+.button-primary { background: var(--brand-primary); color: var(--brand-primary-contrast); }
+.button-secondary { background: var(--bg); color: var(--brand-primary); }
+a.button-primary { display: inline-block; padding: .4rem 1rem; border-radius: 4px; text-decoration: none; }
+.form { max-width: 36rem; }
+.field { margin-bottom: 1rem; border: 0; padding: 0; }
+.field label, .field legend { display: block; font-weight: 600; }
+.field fieldset label, fieldset.field label { font-weight: normal; }
+input, select, textarea { font: inherit; padding: .4rem; border: 1px solid var(--muted); border-radius: 4px; max-width: 100%; }
+[aria-invalid="true"] { border-color: #b42318; }
+.field-error, .errors { color: #b42318; }
+.errors { border: 1px solid #b42318; border-radius: 4px; padding: .5rem 1rem; margin-bottom: 1rem; }
+.errors h2 { font-size: 1rem; margin: 0; }
+.notice { border: 1px solid var(--brand-accent); border-radius: 4px; padding: .5rem 1rem; }
+.hint { color: var(--muted); margin: .25rem 0 0; }
+.filters { display: flex; gap: .5rem; align-items: center; }
+.card { border: 1px solid var(--border); border-radius: 4px; padding: 1rem; margin-bottom: 1rem; }
+.card h2 { font-size: 1.1rem; margin-top: 0; }
+.decisions { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+.decisions label { display: block; }
+.details { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+.details dt { font-weight: 600; }
+.details dd { margin: 0; }
+.pager { display: flex; gap: 1rem; margin: 1rem 0; }
+.status { font-weight: 600; }
+.status-approved { color: #0e6b0e; }
+.status-rejected, .status-cancelled { color: var(--muted); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

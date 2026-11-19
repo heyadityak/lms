@@ -1,4 +1,5 @@
-# Dev stack (SYSTEM_DESIGN §3). One-off: docker compose run --rm app php artisan migrate --force
+# Dev stack (SYSTEM_DESIGN §3). Scale: docker compose up -d --scale app=3 --scale worker=2
+# One-off migrations (never in the entrypoint, D-24): docker compose run --rm migrate
 x-app: &app
   build:
     context: .
@@ -8,9 +9,13 @@ x-app: &app
       GID: ${GID:-1000}
   image: lms-app-dev
   # No env_file: Laravel reads the bind-mounted .env itself, so phpunit.xml can override it
-  # (real env vars land in $_SERVER and would beat phpunit's <env>). Prod injects real env vars.
+  # (real env vars beat phpunit's <env>). Only process-level knobs are passed here. Prod injects real env.
+  environment:
+    APP_SERVER_MODE: ${APP_SERVER_MODE:-octane}
+    OCTANE_WORKERS: ${OCTANE_WORKERS:-auto}
+    OCTANE_MAX_REQUESTS: ${OCTANE_MAX_REQUESTS:-500}
   volumes:
-    - ./:/var/www/html
+    - ./:/app
   depends_on:
     postgres:
       condition: service_healthy
@@ -27,9 +32,11 @@ services:
       target: nginx
     image: lms-nginx-dev
     environment:
-      PHP_FPM_HOST: app:9000
+      APP_UPSTREAM: ${APP_UPSTREAM:-app:8000}
+      NGINX_RESOLVER: ${NGINX_RESOLVER:-127.0.0.11}
     volumes:
-      - ./public:/var/www/html/public:ro
+      # Dev: live static assets (the image bakes in a copy for prod).
+      - ./public:/usr/share/nginx/html:ro
     ports:
       - "${NGINX_PORT:-8080}:80"
     depends_on:
@@ -47,7 +54,7 @@ services:
 
   worker:
     <<: *app
-    command: ["php", "artisan", "queue:work", "--tries=3", "--backoff=10", "--max-time=3600"]
+    command: ["php", "artisan", "queue:work", "redis", "--tries=3", "--backoff=10", "--max-time=3600"]
     healthcheck:
       disable: true
 
@@ -56,6 +63,15 @@ services:
     command: ["php", "artisan", "schedule:work"]
     healthcheck:
       disable: true
+
+  # One-off admin process (12-factor XII); only started by `docker compose run --rm migrate`.
+  migrate:
+    <<: *app
+    command: ["php", "artisan", "migrate", "--force"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    profiles: [tools]
 
   postgres:
     image: postgres:17-alpine
@@ -87,9 +103,9 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # S3-compatible object store (dev parity for BRANDING_DISK/FILESYSTEM_DISK=s3)
+  # S3-compatible object store (dev parity for FILESYSTEM_DISK/BRANDING_DISK=s3, D-24)
   rustfs:
-    image: rustfs/rustfs:1.0.3
+    image: rustfs/rustfs:1.0.6
     environment:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lmsdev}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lmsdevsecret}
@@ -98,8 +114,8 @@ services:
     volumes:
       - s3data:/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${S3_FORWARD_PORT:-9000}:9000"
+      - "${S3_CONSOLE_FORWARD_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
       interval: 5s
@@ -107,9 +123,9 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # One-off, idempotent bucket bootstrap
+  # Idempotent bucket bootstrap; prod buckets come from IaC.
   s3-init:
-    image: amazon/aws-cli:2.39.4
+    image: amazon/aws-cli:2.41.1
     environment:
       AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-lmsdev}
       AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-lmsdevsecret}
@@ -123,10 +139,9 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # Identity provider + role authority. Dev: single node, start-dev, realm imported (incl. DEV ONLY users).
-  # Prod: docker/keycloak/Dockerfile (`start --optimized`), clustered (see SYSTEM_DESIGN).
+  # Upstream Keycloak, no custom image (D-33). Dev: start-dev + realm import (DEV ONLY users).
   keycloak:
-    image: quay.io/keycloak/keycloak:26.8.1
+    image: quay.io/keycloak/keycloak:26.8.2
     command: ["start-dev", "--import-realm"]
     environment:
       KC_DB: postgres
@@ -147,6 +162,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
+      # Image has no curl/wget; bash /dev/tcp against the management port.
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
       interval: 10s
       timeout: 5s
@@ -155,10 +171,15 @@ services:
     restart: unless-stopped
 
   mailpit:
-    image: axllent/mailpit:v1.27
+    image: axllent/mailpit:v1.34.0
     ports:
-      - "8025:8025"
-      - "1025:1025"
+      - "${MAILPIT_UI_FORWARD_PORT:-8025}:8025"
+      - "${MAILPIT_SMTP_FORWARD_PORT:-1025}:1025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     restart: unless-stopped
 
 volumes:

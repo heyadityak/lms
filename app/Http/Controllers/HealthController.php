@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
+/** Liveness/readiness probes (SYSTEM_DESIGN §11, openapi `Readiness`). Never checks Keycloak, S3 or SMTP. */
 final class HealthController
 {
     /** Liveness: process is up. Touches no backing service. */
@@ -19,54 +20,30 @@ final class HealthController
         return response()->json(['status' => 'ok']);
     }
 
-    /** Readiness: Postgres reachable + migrated, Redis reachable when any driver uses it. */
+    /** Readiness: Postgres reachable + migrated, Redis reachable. */
     public function ready(): JsonResponse
     {
-        $checks = ['db' => $this->db()];
-        if ($this->usesRedis()) {
-            $checks['redis'] = $this->redis();
-        }
-
-        $ready = ! array_diff($checks, ['ok']);
+        $checks = [
+            'db' => $this->check('db', fn (): bool => DB::select('select 1') !== [] && Schema::hasTable('migrations')),
+            'redis' => $this->check('redis', fn (): bool => (bool) Redis::connection()->ping()),
+        ];
+        $ready = ! in_array('fail', $checks, true);
 
         return response()->json(
-            ['status' => $ready ? 'ready' : 'not_ready', 'checks' => $checks],
+            ['status' => $ready ? 'ready' : 'unavailable', 'checks' => $checks],
             $ready ? 200 : 503,
         );
     }
 
-    private function db(): string
+    /** @param callable(): bool $probe */
+    private function check(string $name, callable $probe): string
     {
         try {
-            DB::select('select 1');
-
-            return Schema::hasTable('migrations') ? 'ok' : 'not_migrated';
+            return $probe() ? 'ok' : 'fail';
         } catch (Throwable $e) {
-            Log::warning('readyz.db_failed', ['error' => $e::class]);
+            Log::warning("readyz.{$name}_failed", ['error' => $e::class]);
 
-            return 'unreachable';
+            return 'fail';
         }
-    }
-
-    private function redis(): string
-    {
-        try {
-            Redis::connection()->ping();
-
-            return 'ok';
-        } catch (Throwable $e) {
-            Log::warning('readyz.redis_failed', ['error' => $e::class]);
-
-            return 'unreachable';
-        }
-    }
-
-    private function usesRedis(): bool
-    {
-        return in_array('redis', [
-            config('session.driver'),
-            config('cache.stores.'.config('cache.default').'.driver'),
-            config('queue.connections.'.config('queue.default').'.driver'),
-        ], true);
     }
 }

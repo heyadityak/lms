@@ -4,7 +4,7 @@ Small phases. Each phase: one agent run → verified (tests green in Docker) →
 
 | # | Agent | Scope | Status |
 |---|---|---|---|
-| 1 | platform | FrankenPHP + Octane rework: Dockerfile (app), nginx edge proxy image, compose (app×N, worker, scheduler, postgres, redis, rustfs + s3-init, keycloak, mailpit), `.env.example`, `/healthz` `/readyz`, Unit/Feature suites green | todo |
+| 1 | platform | FrankenPHP + Octane rework: Dockerfile (app), nginx edge proxy image, compose (app×N, worker, scheduler, postgres, redis, rustfs + s3-init, keycloak, mailpit), `.env.example`, `/healthz` `/readyz`, Unit/Feature suites green | done |
 | 2 | platform | CI: `ci.yml` (pint, unit, feature w/ Postgres+Redis, OpenAPI lint), `package.yml` (GHCR app+nginx, compose smoke) | todo |
 | 3 | platform | Keycloak: realm import (roles employee/manager/hr_admin/admin, clients lms-web/lms-api-cli/lms-admin, dev users), OIDC web login/logout, JWT API guard + JWKS cache, user provisioning/role sync | todo |
 | 4 | platform | API plumbing: `/api/v1` group, problem+json renderer, Idempotency-Key, Redis throttle headers, `/api/docs` + `/api/openapi.yaml` | todo |

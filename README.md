@@ -14,8 +14,10 @@ The wiki is generated from [`docs/`](docs/) and [`AGENTS.md`](AGENTS.md). Edit t
 
 ## Quickstart (build in progress)
 
+Install Task: https://taskfile.dev/installation/ (e.g. `brew install go-task`).
+
 ```bash
-cp .env.example .env && make up
+cp .env.example .env && task up
 ```
 
 ## License

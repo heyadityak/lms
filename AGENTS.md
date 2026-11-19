@@ -95,7 +95,7 @@ Core features: employees apply for leave, managers approve/reject, HR admins (`h
 - **API contract (D-21):** `docs/api/openapi.yaml` is the source of truth. Domain implements `/api/v1` routes, Resources, status codes and problem `code`s to match it exactly; change the spec first (architect/coordinator) if behaviour must differ. Expose `public_id` (ULID) as `id`, never the bigint key. Errors are `application/problem+json` (RFC 9457) via the exception handler. Swagger UI/Redoc is served at `/api/docs` when the `api` module is enabled (route added by platform).
 
 ## 5. Running things — Docker only
-The host has **no PHP/Composer**. Everything runs through compose.
+The host has **no PHP/Composer**. Everything runs through compose. Install Task: https://taskfile.dev/installation/ (e.g. `brew install go-task`); `task --list` shows the wrappers (`up`, `down`, `build`, `test`, `test:unit`, `test:feature`, `lint`, `migrate`, `shell`, `logs`).
 
 ```bash
 cp .env.example .env

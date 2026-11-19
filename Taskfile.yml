@@ -1,0 +1,52 @@
+# Short wrappers around docker compose (host has no PHP). Install Task: https://taskfile.dev/installation/
+version: '3'
+
+env:
+  # Dev image maps the container user to the host user so bind-mounted files stay writable.
+  UID: {sh: id -u}
+  GID: {sh: id -g}
+
+vars:
+  RUN: docker compose run --rm app
+
+tasks:
+  up:
+    desc: Start the dev stack in the background
+    cmds: [docker compose up -d]
+
+  down:
+    desc: Stop and remove the dev stack (volumes kept)
+    cmds: [docker compose down]
+
+  build:
+    desc: Build all compose images
+    cmds: [docker compose build]
+
+  test:
+    desc: Run all test suites (Unit + Feature on Postgres/Redis)
+    cmds: ['{{.RUN}} php artisan test {{.CLI_ARGS}}']
+
+  test:unit:
+    desc: Run the Unit suite
+    cmds: ['{{.RUN}} php artisan test --testsuite=Unit {{.CLI_ARGS}}']
+
+  test:feature:
+    desc: Run the Feature suite
+    cmds: ['{{.RUN}} php artisan test --testsuite=Feature {{.CLI_ARGS}}']
+
+  lint:
+    desc: Check code style with Pint
+    cmds: ['{{.RUN}} vendor/bin/pint --test']
+
+  migrate:
+    desc: Run migrations as a one-off job
+    cmds: [docker compose run --rm migrate]
+
+  shell:
+    desc: Open a shell in a one-off app container
+    interactive: true
+    cmds: ['{{.RUN}} sh']
+
+  logs:
+    desc: Follow app and worker logs
+    cmds: [docker compose logs -f app worker]

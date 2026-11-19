@@ -1,7 +1,21 @@
 #!/bin/sh
-# Build caches at start, not at build time: env is only known here (D-09).
+# Same image runs web, worker, scheduler and one-off jobs (D-09, D-27).
 set -e
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
+
+# Caches are built at start, not build time: env is only known here. Dev/test read .env live.
+case "${APP_ENV:-}" in
+  "" | local | testing) ;;
+  *) php artisan optimize ;;
+esac
+
+# No command = web process: Octane worker mode, or plain FrankenPHP for debugging state issues.
+if [ $# -eq 0 ]; then
+  if [ "${APP_SERVER_MODE:-octane}" = classic ]; then
+    set -- frankenphp php-server --listen :8000 --root public/
+  else
+    set -- php artisan octane:frankenphp --host=0.0.0.0 --port=8000 \
+      --workers="${OCTANE_WORKERS:-auto}" --max-requests="${OCTANE_MAX_REQUESTS:-500}"
+  fi
+fi
+
 exec "$@"

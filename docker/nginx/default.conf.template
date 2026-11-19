@@ -1,18 +1,22 @@
+# Edge reverse proxy + load balancer in front of N FrankenPHP/Octane replicas (D-24, D-27). No FastCGI.
 log_format lms '$remote_addr - [$time_local] "$request" $status $body_bytes_sent '
                'rid=$request_id upstream=$upstream_addr rt=$request_time';
+
+# Re-resolve APP_UPSTREAM so `--scale app=N` (and replaced replicas) are picked up; round-robin, no sticky sessions.
+resolver ${NGINX_RESOLVER} valid=5s ipv6=off;
+
+upstream app {
+    zone app 64k;
+    server ${APP_UPSTREAM} resolve;
+    keepalive 16;
+}
 
 server {
     listen 80 default_server;
     server_name _;
-    root /var/www/html/public;
-    index index.php;
+    root /usr/share/nginx/html;
 
     server_tokens off;
-
-    # Re-resolve the php-fpm service name so scaled replicas (and replaced ones) are
-    # picked up; nginx round-robins across all returned A records. No sticky sessions.
-    resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
-    set $php_upstream ${PHP_FPM_HOST};
     client_max_body_size 8m;
     charset utf-8;
 
@@ -23,33 +27,34 @@ server {
     access_log /dev/stdout lms;
     error_log /dev/stderr warn;
 
-    # nginx container's own healthcheck
     location = /nginx-health {
         access_log off;
         default_type text/plain;
         return 200 "ok";
     }
 
+    # Static files from public/ (baked into the image); everything else goes to the app.
     location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        try_files $uri @app;
     }
 
-    location = /favicon.ico { access_log off; log_not_found off; try_files $uri /index.php?$query_string; }
-    location = /robots.txt  { access_log off; log_not_found off; }
-
-    location ~ ^/index\.php(/|$) {
-        fastcgi_pass $php_upstream;
-        fastcgi_split_path_info ^(.+\.php)(/.*)$;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME /var/www/html/public$fastcgi_script_name;
-        fastcgi_param DOCUMENT_ROOT /var/www/html/public;
-        fastcgi_param HTTP_X_REQUEST_ID $request_id;
-        fastcgi_hide_header X-Powered-By;
-        internal;
-    }
-
-    # Any other .php file is never executed.
+    # PHP is never served as a file.
     location ~ \.php$ { return 404; }
-
     location ~ /\.(?!well-known) { deny all; }
+
+    location @app {
+        proxy_pass http://app;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        # $http_host keeps the client's port (e.g. :8080), so Laravel builds correct URLs.
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Request-Id $request_id;
+        proxy_hide_header X-Powered-By;
+        proxy_next_upstream error timeout http_502 http_503;
+        proxy_read_timeout 60s;
+    }
 }

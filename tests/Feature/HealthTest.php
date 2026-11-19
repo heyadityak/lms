@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Tests\TestCase;
 
+/** Needs the compose/CI Postgres (lms_test) and Redis. */
 final class HealthTest extends TestCase
 {
     use RefreshDatabase;
@@ -22,11 +23,11 @@ final class HealthTest extends TestCase
             ->assertCookieMissing(config('session.cookie'));
     }
 
-    public function test_readyz_is_ready_when_db_is_up(): void
+    public function test_readyz_is_ready_when_db_and_redis_are_up(): void
     {
         $this->get('/readyz')
             ->assertOk()
-            ->assertExactJson(['status' => 'ready', 'checks' => ['db' => 'ok']]);
+            ->assertExactJson(['status' => 'ready', 'checks' => ['db' => 'ok', 'redis' => 'ok']]);
     }
 
     public function test_readyz_returns_503_when_db_is_unreachable(): void
@@ -40,29 +41,19 @@ final class HealthTest extends TestCase
 
         $this->get('/readyz')
             ->assertStatus(503)
-            ->assertJsonPath('checks.db', 'unreachable');
+            ->assertExactJson(['status' => 'unavailable', 'checks' => ['db' => 'fail', 'redis' => 'ok']]);
 
         config(['database.default' => 'pgsql']);
     }
 
-    public function test_readyz_checks_redis_when_a_driver_uses_it(): void
-    {
-        config(['cache.default' => 'redis']);
-
-        $this->get('/readyz')
-            ->assertOk()
-            ->assertExactJson(['status' => 'ready', 'checks' => ['db' => 'ok', 'redis' => 'ok']]);
-    }
-
     public function test_readyz_returns_503_when_redis_is_unreachable(): void
     {
-        config(['cache.default' => 'redis', 'database.redis.default.port' => 1, 'database.redis.default.max_retries' => 0]);
+        config(['database.redis.default.port' => 1, 'database.redis.default.max_retries' => 0]);
         Redis::purge('default');
 
         $this->get('/readyz')
             ->assertStatus(503)
-            ->assertJsonPath('checks.db', 'ok')
-            ->assertJsonPath('checks.redis', 'unreachable');
+            ->assertExactJson(['status' => 'unavailable', 'checks' => ['db' => 'ok', 'redis' => 'fail']]);
 
         Redis::purge('default');
     }

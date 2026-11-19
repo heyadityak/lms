@@ -1,52 +1,47 @@
 # syntax=docker/dockerfile:1
-# Targets: php-base, app-dev, vendor, app-prod, nginx (SYSTEM_DESIGN §3, D-09)
+# Targets: app-base (FrankenPHP), app-dev, app-prod, nginx (SYSTEM_DESIGN §3, D-09, D-27)
 
-FROM php:8.4-fpm-alpine AS php-base
-RUN apk add --no-cache icu-libs libpq libzip fcgi \
- && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev postgresql-dev libzip-dev linux-headers \
- && docker-php-ext-install -j"$(nproc)" pdo_pgsql intl zip bcmath pcntl \
- && pecl install redis-6.2.0 && docker-php-ext-enable redis \
- && rm -rf /tmp/pear && apk del .build-deps \
- && php -m | grep -qi 'zend opcache'
-COPY docker/php/php.ini /usr/local/etc/php/conf.d/zz-app.ini
-COPY docker/php/zz-fpm.conf /usr/local/etc/php-fpm.d/zz-fpm.conf
-WORKDIR /var/www/html
-STOPSIGNAL SIGQUIT
-EXPOSE 9000
-HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
-  CMD SCRIPT_NAME=/ping SCRIPT_FILENAME=/ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -q pong || exit 1
-CMD ["php-fpm", "-F"]
-
-FROM php-base AS app-dev
+FROM dunglas/frankenphp:1.13.5-php8.4-alpine AS app-base
 ARG UID=1000
 ARG GID=1000
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
-# Remap www-data to the host user so bind-mounted files stay writable.
-RUN apk add --no-cache shadow git unzip \
- && groupmod -o -g "${GID}" www-data && usermod -o -u "${UID}" -g "${GID}" www-data \
- && chown www-data:www-data /var/www/html
-ENV COMPOSER_HOME=/tmp/composer
-USER www-data
-
-FROM composer:2 AS vendor
-WORKDIR /app
-COPY composer.json composer.lock ./
-RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction
-COPY . .
-RUN composer dump-autoload --no-dev --optimize --no-scripts
-
-FROM php-base AS app-prod
-ENV APP_ENV=production APP_DEBUG=false
-RUN printf 'opcache.validate_timestamps=0\n' > /usr/local/etc/php/conf.d/zz-prod.ini
-COPY --chown=www-data:www-data --from=vendor /app /var/www/html
+RUN install-php-extensions pdo_pgsql redis intl zip opcache pcntl bcmath \
+ && apk add --no-cache curl \
+ && cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
+ # Reuse an existing group when GID is taken (e.g. macOS gid 20 = dialout).
+ && (getent group "$GID" >/dev/null || addgroup -g "$GID" app) \
+ && adduser -D -u "$UID" -G "$(getent group "$GID" | cut -d: -f1)" app \
+ && mkdir -p /app && chown -R app /app /data /config
+COPY docker/php/php.ini "$PHP_INI_DIR/conf.d/zz-app.ini"
 COPY --chmod=0755 docker/php/entrypoint.sh /usr/local/bin/entrypoint
-RUN rm -rf tests .env && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views bootstrap/cache \
- && chown -R www-data:www-data storage bootstrap/cache
-USER www-data
+# SERVER_NAME=:8000 turns off Caddy auto-HTTPS; nginx (or the platform LB) terminates TLS.
+ENV SERVER_NAME=:8000 OCTANE_SERVER=frankenphp APP_SERVER_MODE=octane OCTANE_WORKERS=auto OCTANE_MAX_REQUESTS=500
+WORKDIR /app
+USER app
+EXPOSE 8000
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
 ENTRYPOINT ["entrypoint"]
-CMD ["php-fpm", "-F"]
 
-FROM nginx:1.27-alpine AS nginx
+# Dev: code is bind-mounted at /app; composer available for installs.
+FROM app-base AS app-dev
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+ENV COMPOSER_HOME=/tmp/composer
+
+FROM app-base AS app-prod
+ENV APP_ENV=production APP_DEBUG=false
+USER root
+RUN printf 'opcache.validate_timestamps=0\n' > "$PHP_INI_DIR/conf.d/zz-prod.ini"
+USER app
+COPY --chown=app composer.json composer.lock ./
+RUN --mount=type=bind,from=composer:2,source=/usr/bin/composer,target=/usr/bin/composer \
+    composer install --no-dev -o --no-scripts --no-autoloader --prefer-dist --no-interaction
+COPY --chown=app . .
+RUN --mount=type=bind,from=composer:2,source=/usr/bin/composer,target=/usr/bin/composer \
+    composer dump-autoload --no-dev -o --no-interaction \
+ && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache
+
+FROM nginx:1.30-alpine AS nginx
 COPY docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY public/ /var/www/html/public/
-ENV PHP_FPM_HOST=app:9000 NGINX_RESOLVER=127.0.0.11
+COPY public/ /usr/share/nginx/html/
+RUN rm -f /usr/share/nginx/html/index.php /usr/share/nginx/html/frankenphp-worker.php
+ENV APP_UPSTREAM=app:8000 NGINX_RESOLVER=127.0.0.11

@@ -7,7 +7,7 @@ Mermaid diagrams for the white-label LMS. They render natively on GitHub; pre-re
 | [01-system-design.md](01-system-design.md) | C4-style flowcharts | System context, containers (NGINX → FrankenPHP/Octane, worker, scheduler, Postgres, Redis, RustFS, Keycloak, SMTP), per-customer deployment with env/secrets, horizontal scaling |
 | [02-data-flow.md](02-data-flow.md) | DFD level 0 + level 1 | Processes P1–P11, data stores D1–D14 mapped to tables / Redis keys / buckets |
 | [03-class-diagram.md](03-class-diagram.md) | Class diagrams (4) | Models + enums, domain actions/services, identity (Keycloak guard, provisioner, admin client, user-admin actions), HTTP layer; list of class names to adopt |
-| [04-object-diagram.md](04-object-diagram.md) | Object diagram (classDiagram with instances) | Snapshot: alice/bob/carol, IT, EL, an approved and a pending request, actions, ledger rows with balances that add up |
+| [04-object-diagram.md](04-object-diagram.md) | Object diagram (classDiagram with instances) | Snapshot: alice/bob/carol/dave, IT, EL, an approved and a pending request, actions, ledger rows with balances that add up |
 | [05-activity-diagrams.md](05-activity-diagrams.md) | Activity diagrams with swimlanes | Apply leave, approve/reject, cancel, year-start accrual, white-label settings, first-login provisioning, role-change guardrails |
 | [06-sequence-diagrams.md](06-sequence-diagrams.md) | Sequence diagrams (11) | OIDC login, logout, API JWT, apply, approve, cancel+refund, accrual, `/readyz`, logo upload + theming, API errors + idempotency, user creation with compensation |
 | [07-state-diagram.md](07-state-diagram.md) | State diagram | Leave request lifecycle and transition table |

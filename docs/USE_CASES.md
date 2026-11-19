@@ -1,6 +1,6 @@
 # LMS — Use Cases & Business Rules
 
-Status: v1.2 (architect, 2026-11-19; Keycloak identity D-20, API contract D-21, in-app user admin D-22). Source of truth for *what* the system does. *How* lives in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md).
+Status: v1.3 (architect, 2026-11-19; Keycloak identity D-20, API contract D-21, in-app user admin D-22, `admin` role D-29, editable weekend D-30, review answers D-31…D-34). Source of truth for *what* the system does. *How* lives in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md).
 
 ## 1. Actors
 
@@ -8,13 +8,14 @@ Status: v1.2 (architect, 2026-11-19; Keycloak identity D-20, API contract D-21, 
 |---|---|---|---|
 | Employee | `employee` | Any staff member. Applies for leave, sees own balances/history. | "Client" (`employees` table) |
 | Manager | `manager` | Has direct reports (`users.manager_id`). Is also an employee (applies for own leave). Approves/rejects reports' requests. | HOD admin (`admins`, one per `Dept`) |
-| HR Admin | `hr_admin` | Manages users, departments, leave types, holidays, balance adjustments, reports. Can act on any request except their own. | HOD admin (registration + set leaves) |
+| HR Admin | `hr_admin` | HR operations: departments, leave types, holidays, working week, balance adjustments, reports, users' HR attributes (department, manager, joining date, codes, deactivation). Can act on any request except their own. | HOD admin (registration + set leaves) |
+| Admin | `admin` (additive, D-29) | Customer/IT admin: branding, modules and in-app Keycloak user management (UC-U*). No HR rights unless the user's base role is `hr_admin`. | — |
 | System | — | Scheduler (year-start accrual) and queue worker (emails). | `update_leaves.php` ran on login |
 | Identity provider | — | **Keycloak** (realm `lms`). Authenticates every user, owns passwords/MFA, and is the authority for the role (D-20). | Login form against `employees` table |
 
-A user has exactly **one** role in the app. Roles are **stored in Keycloak** as realm roles (`employee`, `manager`, `hr_admin`), assigned either in Keycloak/the customer directory or by an `hr_admin` from inside the LMS (UC-U*, module `user_management`, D-22), and synced into `users.role` on every login. If a user holds several, the highest wins (`hr_admin` > `manager` > `employee`); no LMS realm role ⇒ login refused. A `manager` or `hr_admin` can also apply for leave. Resource-level rules (only the direct manager approves, nobody approves their own request) stay in the app's Policies.
+A user has exactly **one base role** in the app (`employee`, `manager`, `hr_admin`) and may additionally hold **`admin`** (D-29). Roles are **stored in Keycloak** as realm roles, assigned either in Keycloak/the customer directory or by an `admin` from inside the LMS (UC-U*, module `user_management`, D-22), and synced on every login: base role into `users.role`, `admin` into `users.is_admin`. If a user holds several base roles, the highest wins (`hr_admin` > `manager` > `employee`); no base role ⇒ login refused (`admin` alone is not enough; the realm default role `employee` normally covers this). Every user, including managers, HR admins and admins, can apply for leave. Resource-level rules (only the direct manager approves, nobody approves their own request) stay in the app's Policies.
 
-**Customer Admin** is not a separate role. The product ships as white-label, single-tenant software, with one deployment per customer (SMB or enterprise). Branding and module settings are managed by `hr_admin` (UC-B*). The vendor/operator controls the env (licensed modules, brand defaults, storage) at deploy time.
+**Customer Admin** is the `admin` realm role (D-29, supersedes D-18). The product ships as white-label, single-tenant software, with one deployment per customer (SMB or enterprise). Branding, module settings and identity user management are done by `admin` (UC-B*, UC-U*). A small customer can give one person `hr_admin` + `admin`. The vendor/operator controls the env (licensed modules, brand defaults, storage) at deploy time.
 
 ## 2. Use cases
 
@@ -56,7 +57,7 @@ Legend: **MVP** = build now. **Later** = documented so the data model does not b
 | ID | Use case | Scope | Notes |
 |---|---|---|---|
 | UC-H1 | CRUD departments | MVP | Delete only if no users. |
-| UC-H2 | Edit LMS-only fields / deactivate / reactivate users (always available, also when `user_management` is off) (department, manager, joining date, employee code, designation, employment type) | MVP | Users are created by first SSO login (§3.10) or by HR through UC-U2 when `user_management` is on. Role is read-only in this use case (change it via UC-U6 or in Keycloak). No hard delete. Prorated entitlement (§3.7) is granted when `date_of_joining` is first known. |
+| UC-H2 | Edit LMS-only fields / deactivate / reactivate users (always available, also when `user_management` is off) (department, manager, joining date, employee code, designation, employment type) | MVP | Users are created by first SSO login (§3.10) or by an `admin` through UC-U2 when `user_management` is on. Role is read-only in this use case (change it via UC-U6 or in Keycloak). No hard delete. Prorated entitlement (§3.7) is granted when `date_of_joining` is first known. |
 | UC-H3 | CRUD leave types (quota, carry-forward cap, max balance, half-day allowed, backdate days, tracks balance) | MVP | Code immutable after create. Deactivate instead of delete once used. |
 | UC-H4 | CRUD holidays | MVP | |
 | UC-H5 | Manual balance adjustment (+/- days, note required) | MVP | Writes `adjustment` ledger entry. |
@@ -70,22 +71,23 @@ Legend: **MVP** = build now. **Later** = documented so the data model does not b
 | UC-H13 | Monthly accrual frequency | Later | |
 | UC-H14 | Multi-location holiday calendars | Later | |
 | UC-H15 | Generic admin audit log (who changed which setting) | Later | MVP audits requests + ledger only. |
+| UC-H16 | Set the working week (weekend days) | MVP | D-30. Override of `LMS_WEEKEND_DAYS` in `settings` (`work.weekend_days`), reset = back to env. ISO weekdays 1–7, unique, at least one working day. Affects requests submitted afterwards only (§3.3). |
 
-### 2.3a HR Admin: identity user management (module `user_management`, D-22)
+### 2.3a Admin: identity user management (module `user_management`, D-22, D-29)
 
-Performed by `hr_admin` only. The LMS writes to Keycloak through the Admin REST API (service account `lms-admin`), then mirrors the result into `users`. Every operation writes a `user_admin_audits` row (actor, target, action, changed fields, outcome).
+Performed by `admin` only (not `hr_admin`). The LMS writes to Keycloak through the Admin REST API (service account `lms-admin`), then mirrors the result into `users`. Every operation writes a `user_admin_audits` row (actor, target, action, changed fields, outcome).
 
 | ID | Use case | Scope | Notes |
 |---|---|---|---|
-| UC-U1 | List / search identity users (name, email, username, enabled, role, department) | MVP | Search runs against Keycloak, merged with the local mirror. |
+| UC-U1 | List / search identity users (name, email, username, enabled, role, department) | MVP | Search runs against Keycloak, merged with the local mirror. Keycloak unavailable ⇒ list/detail and every UC-U* action return 503 `IDP_UNAVAILABLE`; no stale local fallback (D-32). HR pages on local data (UC-H2) keep working. |
 | UC-U2 | Create a user: username, email, first/last name, enabled, realm role, plus LMS fields (department, manager, joining date) in the same form | MVP | No password is ever set by the LMS. Keycloak sends `execute-actions-email` (`UPDATE_PASSWORD`, `VERIFY_EMAIL`). Keycloak first, then local row with `keycloak_sub`; on local failure the Keycloak user is deleted (compensation). `Idempotency-Key` on the API. Grants prorated entitlement if `date_of_joining` is set. |
 | UC-U3 | Update profile (email, first/last name) + LMS fields | MVP | Federated users (LDAP/AD, `federationLink`) are read-only for profile fields (422 `IDP_READ_ONLY`); LMS fields stay editable. |
 | UC-U4 | Enable / disable a user | MVP | Disable = Keycloak `enabled=false` + logout of all their Keycloak sessions + local deactivation (§3.9). Enable reverses Keycloak + local flag. |
 | UC-U5 | Send a password-reset email | MVP | Keycloak `execute-actions-email` with `UPDATE_PASSWORD`. Not for federated users whose passwords live in the directory (422 `IDP_READ_ONLY`). |
-| UC-U6 | Assign / revoke realm role | MVP | Allow-list `employee`, `manager`, `hr_admin` only; other realm roles are never touched. Guardrails §3.11. |
-| UC-U7 | Separate `admin` role for identity management (IT vs HR split) | Later | |
+| UC-U6 | Assign / revoke realm roles | MVP | Allow-list `employee`, `manager`, `hr_admin`, `admin` only: one base role plus optional `admin`; other realm roles are never touched. Guardrails §3.11. |
+| UC-U7 | Separate `admin` role for identity management, branding and modules (IT vs HR split) | MVP | Done by D-29 (§1). |
 
-### 2.4 Customer Admin: branding & modules (white-label)
+### 2.4 Customer Admin (`admin` role): branding & modules (white-label)
 
 Each deployment is customised per customer. **Env sets defaults and the licensed ceiling. The `settings` table holds admin overrides.** See SYSTEM_DESIGN §8.
 
@@ -99,7 +101,7 @@ Each deployment is customised per customer. **Env sets defaults and the licensed
 | UC-B6 | Reset branding to env defaults | MVP | Deletes override rows. |
 | UC-B7 | Custom CSS snippet / custom domain email templates | Later | |
 | UC-B8 | Per-module configuration UI (e.g. approval levels) | Later | |
-| UC-B9 | White-label the login page (Keycloak login theme with the customer's name, colours, logo) | MVP (ops) | Operator task per deployment: a Keycloak theme, not app code. |
+| UC-B9 | White-label the login page (realm display name, optional login theme) | Customer (ops) | Done in the customer's own upstream Keycloak. The LMS ships no Keycloak image and no login theme (D-33). |
 | UC-B10 | Connect the customer's directory (LDAP/AD user federation, SAML or OIDC brokering e.g. Entra ID / Azure AD) | MVP (ops) | Configured in Keycloak. The app only sees OIDC tokens. |
 
 ### 2.5 System
@@ -118,7 +120,7 @@ Each deployment is customised per customer. **Env sets defaults and the licensed
 | code | name | annual_quota | tracks_balance | carry_forward_cap | max_balance | allow_half_day | max_backdate_days | Origin |
 |---|---|---|---|---|---|---|---|---|
 | `CL` | Casual Leave | 10 | true | 0 (all lapses) | null | true | 0 | original: CL reset yearly |
-| `SL` | Sick Leave | 15 | true | null (unlimited) | null | true | 7 | original: SL accumulated |
+| `SL` | Sick Leave | 15 | true | null (unlimited) | null | true | 7 (default confirmed, D-31) | original: SL accumulated |
 | `EL` | Earned Leave | 30 | true | null (unlimited) | 300 | false | 0 | original: EL accumulated, capped 300 |
 | `LWP` | Leave Without Pay | 0 | false | — | — | true | 0 | new |
 
@@ -133,7 +135,7 @@ Each deployment is customised per customer. **Env sets defaults and the licensed
 
 ### 3.3 Day counting (`WorkingDayCalculator`)
 1. Range is inclusive: `start_date..end_date`, `end_date >= start_date`.
-2. Exclude weekend days. Weekend = ISO weekdays in `LMS_WEEKEND_DAYS` env (default `6,7` = Sat, Sun).
+2. Exclude weekend days. Weekend = ISO weekdays from the `work.weekend_days` setting (UC-H16) if set, else `LMS_WEEKEND_DAYS` env (default `6,7` = Sat, Sun) (D-30). Read at submit/approve time; changing it never recalculates `days` of already-submitted requests.
 3. Exclude dates in `holidays`.
 4. `day_part` ∈ {`full`, `first_half`, `second_half`}. Non-`full` is allowed only when `start_date == end_date` **and** the leave type has `allow_half_day=true`. Counts as **0.5**.
 5. If the result is 0 (e.g. only weekends/holidays), reject: "Selected dates contain no working days."
@@ -226,7 +228,7 @@ Every transition writes one `leave_request_actions` row: actor, from, to, commen
 | `reports` | yes | UC-H7, UC-H8 | Routes 404, menu hidden | MVP |
 | `api` | yes | All `/api/v1/*` and `/api/docs` | 404 `application/problem+json`. Keycloak tokens are still issued (IdP) but the app refuses them. | MVP |
 | `notifications` | yes | UC-S2 leave emails (submitted/decided/cancelled) | Not dispatched. (Password and account mails are Keycloak's, unaffected.) | MVP |
-| `user_management` | yes | UC-U1–U6 (identity admin via Keycloak Admin API) | Routes 404, menu hidden. Users are managed in Keycloak / the customer's directory; HR still edits LMS fields (UC-H2). Turn off for AD/Entra-managed customers. | MVP |
+| `user_management` | yes (SMB); **leave it out for directory-backed realms** (LDAP/AD/Entra, D-34) | UC-U1–U7 (identity admin via Keycloak Admin API) | Routes 404, menu hidden. Users are managed in Keycloak / the customer's directory; HR still edits LMS fields (UC-H2). `admin` keeps branding/modules. | MVP |
 | `multi_level_approval` | no | UC-M6 | Single-level only | Later (key reserved, registry entry `available=false`) |
 | `delegation` | no | UC-M5 | — | Later (key reserved) |
 
@@ -235,26 +237,26 @@ Every transition writes one `leave_request_actions` row: actor, from, to, commen
 Effective state: `enabled(m) = m ∈ MODULES_ENABLED (env, licensed) AND m ∉ settings['modules.disabled'] AND registry[m].available`.
 
 ### 3.9 Other rules
-- Users are **never hard-deleted** (the original deleted employee rows and lost history). Deactivation (`users.is_active=false`) refuses web login after the Keycloak callback, rejects API requests even with a valid JWT (401), logs out existing sessions on their next request, and excludes the user from accrual. Disabling the account in Keycloak/the directory as well is recommended (operator). Pending requests of a deactivated user are auto-cancelled by the system (actor = HR admin who deactivated).
+- Users are **never hard-deleted** (the original deleted employee rows and lost history). Deactivation (`users.is_active=false`) refuses web login after the Keycloak callback, rejects API requests even with a valid JWT (401), logs out existing sessions on their next request, and excludes the user from accrual. Disabling the account in Keycloak/the directory as well is recommended (operator). Pending requests of a deactivated user are auto-cancelled by the system (actor = the HR admin or admin who deactivated/disabled).
 - A manager cannot be their own manager. `manager_id` chains must not form cycles; validate on save by walking up to depth 10.
 - Changing a leave type's quota affects only **future** grants. Existing ledger rows are never rewritten.
-- Holidays added after approval do **not** recompute approved requests (documented limitation; HR can adjust).
+- Holidays added after approval do **not** recompute approved requests (documented limitation; HR can adjust). The same applies to weekend-day changes (UC-H16): `days` of pending and approved requests stays as computed at submit (D-30).
 - All dates are `DATE` (no time). "today" = `now(APP_TIMEZONE)->toDateString()`.
 
 ### 3.10 Identity & provisioning (Keycloak, D-20)
 - The app has no passwords. Web login is OIDC auth code against realm `lms`, client `lms-web`. API clients use client `lms-api-cli` (public, PKCE) and send `Authorization: Bearer <access token>`.
 - **First login** (no `users` row with this `keycloak_sub`): if a row exists with the same email (case-insensitive, `email_verified` claim true) and no `keycloak_sub` (e.g. migrated data), link it; otherwise create the user with `name`, `email` from the token, role from realm roles, `department_id`/`manager_id` null, `is_active=true`.
-- **Every login / API call**: `name`, `email` and `role` are refreshed from the token (Keycloak wins). A token with no LMS realm role is refused (403 page / 401 API).
+- **Every login / API call**: `name`, `email`, `role` and `is_admin` are refreshed from the token (Keycloak wins). A token with no LMS realm role is refused (403 page / 401 API).
 - Roles change in the app only through UC-U6 (module `user_management`), which writes to Keycloak first and then mirrors. Department, manager, joining date and active flag stay app-owned.
 - Logout is RP-initiated: the app clears its Redis session and redirects to Keycloak's end-session endpoint with `id_token_hint`.
 
 ### 3.11 User-admin guardrails (D-22)
 | # | Rule | Error |
 |---|---|---|
-| G1 | Only `hr_admin` may use UC-U*. | 403 `FORBIDDEN` |
-| G2 | No self-demotion (removing your own `hr_admin`) and no self-disable. | 403 `SELF_MODIFICATION_FORBIDDEN` |
-| G3 | The last active `hr_admin` cannot be demoted or disabled (count of active local users with role `hr_admin`, checked under a Redis lock). | 409 `LAST_HR_ADMIN` |
-| G4 | Roles outside the allow-list (`employee`, `manager`, `hr_admin`) cannot be assigned or revoked. Exactly one LMS role per user: assigning one revokes the other two. | 422 `VALIDATION_FAILED` |
+| G1 | Only `admin` may use UC-U* (D-29). | 403 `FORBIDDEN` |
+| G2 | No self-demotion (changing your own roles, incl. removing your own `admin`) and no self-disable. | 403 `SELF_MODIFICATION_FORBIDDEN` |
+| G3 | The last active `admin` cannot lose `admin` or be disabled (count of active local users with `is_admin`, checked under a Redis lock). | 409 `LAST_ADMIN` |
+| G4 | Roles outside the allow-list (`employee`, `manager`, `hr_admin`, `admin`) cannot be assigned or revoked. Exactly one base role per user (assigning one revokes the other two) plus optional `admin`. | 422 `VALIDATION_FAILED` |
 | G5 | Federated users (`federationLink` set): profile fields and password reset are read-only; a role change is attempted and refused if the provider rejects it. | 422 `IDP_READ_ONLY` |
 | G6 | Duplicate username/email in Keycloak. | 409 `IDP_CONFLICT` |
 | G7 | Keycloak unreachable, timeout or 5xx. Nothing is written locally. | 503 `IDP_UNAVAILABLE` |

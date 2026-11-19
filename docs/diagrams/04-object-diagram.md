@@ -1,9 +1,9 @@
 # 04 — Object diagram (snapshot)
 
-Mermaid has no native object diagram, so this uses `classDiagram` with **instance boxes** named `object : Class` and attribute *values* instead of types. It is a snapshot of one deployment on **2026-11-19** with `LEAVE_YEAR_START_MONTH=1` (calendar leave year), `LMS_WEEKEND_DAYS=6,7` and the `holidays` module on. Ids are shortened ULIDs (`public_id`); bigint ids are shown only where they explain foreign keys.
+Mermaid has no native object diagram, so this uses `classDiagram` with **instance boxes** named `object : Class` and attribute *values* instead of types. It is a snapshot of one deployment on **2026-11-19** with `LEAVE_YEAR_START_MONTH=1` (calendar leave year), weekend days `6,7` (`LMS_WEEKEND_DAYS`, no `work.weekend_days` override, D-30) and the `holidays` module on. Ids are shortened ULIDs (`public_id`); bigint ids are shown only where they explain foreign keys.
 
 Story:
-- Alice (employee, IT) reports to Bob (manager). Carol is the HR admin. All three are the dev users from the Keycloak realm import.
+- Alice (employee, IT) reports to Bob (manager). Carol is the HR admin. Dave (employee, IT) also holds the additive `admin` role (D-29). All four are the dev users from the Keycloak realm import.
 - Alice carried 12 EL days from 2025 and got the 30-day EL grant on 2026-01-01.
 - Request #41: EL 2026-10-07 (Wed) … 2026-10-09 (Fri) = **3 days**, approved by Bob → `debit −3`.
 - Request #42: EL 2026-12-21 (Mon) … 2026-12-25 (Fri). 25 Dec is a holiday, so **4 days**. Still `pending`.
@@ -34,8 +34,20 @@ classDiagram
         name = Carol Iyer
         email = carol@example.test
         role = hr_admin
+        is_admin = false
         manager_id = null
         date_of_joining = 2019-07-01
+        is_active = true
+    }
+    class dave["dave : User"] {
+        id = 4
+        keycloak_sub = 7d2f…b604
+        name = Dave Kumar
+        email = dave@example.test
+        role = employee
+        is_admin = true
+        department_id = 2
+        manager_id = null
         is_active = true
     }
     class bob["bob : User"] {
@@ -152,7 +164,7 @@ classDiagram
         actor_id = 2
     }
     class aud["aud : UserAdminAudit"] {
-        actor_id = 1
+        actor_id = 4
         target_user_id = 2
         action = assign_role
         changes = role employee to manager
@@ -162,6 +174,7 @@ classDiagram
 
     it -- bob : department_id
     it -- alice : department_id
+    it -- dave : department_id
     bob -- alice : manager_id
     alice -- req41 : submits
     alice -- req42 : submits
@@ -176,7 +189,7 @@ classDiagram
     alice -- l3 : owns
     req41 -- l3 : debit
     xmas .. req42 : excluded from day count
-    carol -- aud : actor
+    dave -- aud : actor
     bob -- aud : target
 ```
 
@@ -185,4 +198,4 @@ Checks:
 - req41 and req42 do not overlap, so the Postgres exclusion constraint accepts both.
 - 12 + 30 = 42 ≤ `max_balance` 300, so the grant was not clipped. EL `carry_forward_cap = null`, so the 2025 closing balance carried in full and no `lapse` row exists.
 - If Alice cancels req41 before 2026-10-07 (not possible any more: it has started), a `reversal +3` would bring balance back to 42. If Bob approves req42 now, a `debit −4` makes balance 35 = available.
-- The audit row records Carol promoting Bob through UC-U6 (Keycloak first, then the local `role` mirror).
+- The audit row records Dave (admin) promoting Bob through UC-U6 (Keycloak first, then the local `role` mirror). Carol, as `hr_admin` without `admin`, could not (G1).

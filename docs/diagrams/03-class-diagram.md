@@ -22,6 +22,7 @@ classDiagram
         +string name
         +string email
         +Role role
+        +bool is_admin
         +?int department_id
         +?int manager_id
         +?string employee_code
@@ -139,7 +140,9 @@ classDiagram
         Employee = employee
         Manager = manager
         HrAdmin = hr_admin
+        Admin = admin
         +fromKeycloakRoles(array roles)$ ?Role
+        +isBase() bool
         +rank() int
     }
     class LeaveStatus {
@@ -208,7 +211,7 @@ classDiagram
 
 Notes:
 - Every API-exposed model uses `HasUlids` on `public_id` and `getRouteKeyName() = 'public_id'`; the bigint `id` is never serialised (D-21).
-- `User` has no `password` / `remember_token`: Keycloak owns credentials (D-20). `role` is a cache of the Keycloak realm role; `Role::fromKeycloakRoles()` picks the highest (`hr_admin` > `manager` > `employee`).
+- `User` has no `password` / `remember_token`: Keycloak owns credentials (D-20). `role` is a cache of the base Keycloak realm role; `Role::fromKeycloakRoles()` picks the highest base role (`hr_admin` > `manager` > `employee`). `is_admin` caches the additive realm role `admin` (`Role::Admin`, never stored in `role`, D-29).
 - Multiplicity `0..2` on ledger rows per request: at most one `debit` and one `reversal`.
 - `LeaveLedgerEntry` and `UserAdminAudit` throw `LogicException` on `update()` / `delete()` (append-only).
 
@@ -261,6 +264,10 @@ classDiagram
     class UpdateModules {
         <<Action (new)>>
         +handle(array disabled, User actor) void
+    }
+    class UpdateWorkingWeek {
+        <<Action (new)>>
+        +handle(?array weekendIsoDays, User actor) void
     }
 
     class WorkingDayCalculator {
@@ -355,6 +362,8 @@ classDiagram
     AccrueYear --> RunYearStartAccrual
     DeactivateUser --> CancelLeaveRequest
     WorkingDayCalculator --> Modules
+    WorkingDayCalculator --> Settings : work.weekend_days
+    UpdateWorkingWeek --> Settings
     UpdateBranding --> Settings
     UpdateBranding --> BrandColor
     ResetBranding --> Settings
@@ -394,7 +403,7 @@ classDiagram
     class KeycloakUserProvisioner {
         <<Auth (new)>>
         +provision(array claims) User
-        -syncRole(User u, array realmRoles) void
+        -syncRoles(User u, array realmRoles) void
     }
 
     class KeycloakAdminClient {
@@ -443,7 +452,7 @@ classDiagram
     class UserAdminGuard {
         <<Service (new)>>
         +assertNotSelf(User actor, User target) void
-        +assertNotLastHrAdmin(User target) void
+        +assertNotLastAdmin(User target) void
         +assertProfileEditable(array kcUser) void
         +assertAllowedRoles(array roles) void
     }
@@ -493,7 +502,7 @@ classDiagram
 Notes:
 - `KeycloakAdminClient` is bound to `HttpKeycloakAdminClient` in a service provider; Feature tests bind `FakeKeycloakAdminClient`. Nothing else talks to the Admin REST API.
 - `HttpKeycloakAdminClient::adminToken()` gets a client-credentials token for `lms-admin` and caches it in Redis until 30 s before expiry.
-- All user-admin actions write one `UserAdminAudit` row each (success or failure) and are gated by module `user_management` + role `hr_admin`.
+- All user-admin actions write one `UserAdminAudit` row each (success or failure) and are gated by module `user_management` + realm role `admin` (D-29). Keycloak unavailable ⇒ `IdpUnavailable` (503) also for list/detail; no local fallback (D-32).
 - `UpdateUserAction` also serves the plain LMS-field edit (`PATCH /users/{id}`, module off): then it never calls Keycloak.
 
 ## 4. HTTP layer, policies, middleware, notifications
@@ -538,6 +547,11 @@ classDiagram
         +edit()
         +update(UpdateModulesRequest r, UpdateModules a)
     }
+    class WorkingWeekController {
+        <<Web Admin + Api V1 (new)>>
+        +show()
+        +update(UpdateWorkingWeekRequest r, UpdateWorkingWeek a)
+    }
     class BrandingAssetController {
         <<Web public>>
         +show(string asset) StreamedResponse
@@ -568,7 +582,7 @@ classDiagram
     }
     class SetUserRolesRequest {
         <<FormRequest (new)>>
-        roles in allow-list, exactly one
+        allow-list, one base role + optional admin
     }
     class UpdateBrandingRequest {
         <<FormRequest>>
@@ -577,6 +591,10 @@ classDiagram
     class UpdateModulesRequest {
         <<FormRequest>>
         keys subset of licensed
+    }
+    class UpdateWorkingWeekRequest {
+        <<FormRequest (new)>>
+        ISO 1-7, distinct, max 6, or null
     }
 
     class LeaveRequestPolicy {
@@ -589,11 +607,13 @@ classDiagram
     class UserPolicy {
         <<Policy>>
         view: self, manager-of, hr_admin
-        update, manageIdentity: hr_admin
+        update: hr_admin
+        manageIdentity: admin
     }
     class SettingsPolicy {
         <<Policy>>
-        hr_admin
+        manageBranding, manageModules: admin
+        updateWorkingWeek: hr_admin
     }
 
     class EnsureModuleEnabled {
@@ -653,6 +673,8 @@ classDiagram
     BrandingController ..> SettingsPolicy
     ModuleController ..> UpdateModulesRequest
     ModuleController ..> SettingsPolicy
+    WorkingWeekController ..> UpdateWorkingWeekRequest
+    WorkingWeekController ..> SettingsPolicy
     BrandingComposer --> Brand
     LeaveRequestSubmitted ..> Brand : subject prefix
     LeaveRequestDecided ..> Brand
@@ -685,6 +707,7 @@ New (introduced by this run, D-20/D-21/D-22):
 | `StoreIdentityUserRequest`, `UpdateIdentityUserRequest`, `SetUserRolesRequest` | `App\Http\Requests` | Form Requests for identity admin |
 | `AdjustBalance` | `App\Actions\Accrual` | UC-H5 `adjustment` ledger row |
 | `UpdateBranding`, `ResetBranding`, `UpdateModules` | `App\Actions\Settings` | UC-B1–B6 |
+| `UpdateWorkingWeek`, `WorkingWeekController`, `UpdateWorkingWeekRequest` | `App\Actions\Settings`, controllers, `App\Http\Requests` | UC-H16 weekend override (D-30) |
 | `ApproverResolver`, `AccrualCalculator` | `App\Services` | Approver resolution; pure accrual maths |
 | `AccrualSummary` | `App\Actions\Accrual` | Return value of `RunYearStartAccrual` |
 | `LeaveYear`, `BrandColor`, `Brand` | `App\Support` | Leave-year maths (`LEAVE_YEAR_START_MONTH`), hex/contrast, view DTO |

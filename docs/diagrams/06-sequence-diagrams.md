@@ -33,7 +33,7 @@ sequenceDiagram
     A->>A: Socialite keycloak driver: state + PKCE verifier
     A->>R: store state, code_verifier in new session
     A-->>U: 302 to KEYCLOAK_PUBLIC_URL/realms/lms/protocol/openid-connect/auth
-    U->>K: login page (customer theme, LDAP / AD / SAML broker possible)
+    U->>K: login page (customer-configured upstream Keycloak, LDAP / AD / SAML broker possible)
     K-->>U: 302 /auth/callback?code=…&state=…
     U->>N: GET /auth/callback
     N->>A: proxy_pass
@@ -276,7 +276,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    actor H as HR admin
+    actor H as Admin (role admin)
     participant A as App (via NGINX)
     participant AC as UpdateBranding
     participant S3 as RustFS (S3-compatible, BRANDING_DISK=s3)
@@ -345,7 +345,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    actor H as HR admin (carol)
+    actor H as Admin (dave, role admin)
     participant A as App (Octane)
     participant AC as CreateUserAction
     participant KC as KeycloakAdminClient (HTTP)
@@ -354,8 +354,8 @@ sequenceDiagram
     participant DB as Postgres
 
     H->>A: POST /api/v1/admin/users (Idempotency-Key, username, email, names, role, LMS fields)
-    A->>A: module user_management, hr_admin, StoreIdentityUserRequest
-    A->>AC: handle(data, carol)
+    A->>A: module user_management, realm role admin, StoreIdentityUserRequest
+    A->>AC: handle(data, dave)
     AC->>KC: createUser(rep)
     KC->>R: get keycloak:admin-token
     alt token missing or near expiry
@@ -374,7 +374,7 @@ sequenceDiagram
         AC->>DB: INSERT user_admin_audits create failed IDP_UNAVAILABLE
         A-->>H: 503 problem IDP_UNAVAILABLE + Retry-After
     else 201 Location …/users/KC_ID
-        KC->>K: POST …/users/KC_ID/role-mappings/realm [role]
+        KC->>K: POST …/users/KC_ID/role-mappings/realm [base role, + admin if is_admin]
         AC->>DB: BEGIN, INSERT users (keycloak_sub = KC_ID, LMS fields), grant if joining date
         alt local insert fails (e.g. constraint)
             AC->>DB: ROLLBACK
@@ -391,4 +391,4 @@ sequenceDiagram
     end
 ```
 
-If the compensation delete itself fails (Keycloak went down mid-flight), the audit row records `compensate_delete` with outcome `failed` and the Keycloak id, so HR can clean up; the next login of that identity would otherwise be provisioned normally.
+If the compensation delete itself fails (Keycloak went down mid-flight), the audit row records `compensate_delete` with outcome `failed` and the Keycloak id, so an admin can clean up; the next login of that identity would otherwise be provisioned normally.

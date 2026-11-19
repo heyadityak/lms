@@ -1,6 +1,6 @@
 # LMS — System Design
 
-Status: v1.3 (architect, 2026-11-19; Keycloak D-20, API contract D-21, in-app user admin D-22, Redis D-23, scaling/RustFS D-24, CI D-25, leave year D-26, FrankenPHP D-27). Business rules live in [USE_CASES.md](USE_CASES.md). Where this file and USE_CASES disagree, USE_CASES wins for business rules and this file wins for technical design.
+Status: v1.4 (architect, 2026-11-19; Keycloak D-20, API contract D-21, in-app user admin D-22, Redis D-23, scaling/RustFS D-24, CI D-25, leave year D-26, FrankenPHP D-27, `admin` role D-29, editable weekend D-30, review answers D-31…D-34). Business rules live in [USE_CASES.md](USE_CASES.md). Where this file and USE_CASES disagree, USE_CASES wins for business rules and this file wins for technical design.
 
 ## 1. Context & constraints
 
@@ -10,7 +10,7 @@ Status: v1.3 (architect, 2026-11-19; Keycloak D-20, API contract D-21, in-app us
 | Runtime | **FrankenPHP** (PHP **8.4**) + **Laravel Octane** worker mode on `:8000` (D-27), Laravel **12.x**, PostgreSQL **17**, NGINX (stable, alpine) as edge reverse proxy |
 | UI | Server-rendered Blade + one plain CSS file (`public/css/app.css`) using CSS custom properties. **No Node/Vite build** (D-05). |
 | API | JSON, `/api/v1`, contract-first: [`docs/api/openapi.yaml`](api/openapi.yaml) + [`docs/API_GUIDELINES.md`](API_GUIDELINES.md) (D-21). Bearer JWT from Keycloak (D-20). |
-| Identity | **Keycloak 26** (own container, `keycloak` DB on the same Postgres server, clustered in prod). Realm `lms`, realm roles `employee|manager|hr_admin`, clients `lms-web` (confidential), `lms-api-cli` (public, PKCE), `lms-admin` (service account, D-22). See §10.1 (D-20). |
+| Identity | **Keycloak 26** (own container, `keycloak` DB on the same Postgres server, clustered in prod). Realm `lms`, realm roles `employee|manager|hr_admin` (base, one per user) + `admin` (additive, D-29), clients `lms-web` (confidential), `lms-api-cli` (public, PKCE), `lms-admin` (service account, D-22). See §10.1 (D-20). |
 | Web auth | OIDC auth code via Laravel Socialite (`socialiteproviders/keycloak`) → Laravel session (store per `SESSION_DRIVER`), CSRF. No passwords in the app. |
 | Queue / cache / session / locks / rate limits | **Redis 7** (`phpredis`), D-23. Separate logical DBs: `default` 0, `cache` 1 (cache, atomic locks, rate limiters, JWKS, admin token, idempotency keys), `session` 2 (`SESSION_CONNECTION=session`), queue 3. Key prefix `REDIS_PREFIX=lms-`. `failed_jobs` stays in Postgres. |
 | Mail | SMTP via env. `log` mailer in tests, Mailpit in compose. |
@@ -71,7 +71,7 @@ One Dockerfile with multi-stage targets (D-09, D-27). Same `app` (FrankenPHP) im
 | `redis` | `redis:7-alpine` | `redis-server --appendonly yes` | internal | managed Redis in prod (TLS via `REDIS_SCHEME=tls` / `REDIS_URL`) | Healthcheck `redis-cli ping`. Volume `redisdata`. |
 | `rustfs` | `rustfs/rustfs` | — | `9000` S3 API, `9001` console | **dev** (prod: any S3-compatible store) | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY`. Volume `s3data`. Healthcheck `/health`. |
 | `s3-init` | `amazon/aws-cli` | `head-bucket \|\| create-bucket $AWS_BUCKET` | — | dev; prod bucket is provisioned by IaC | Init container, idempotent. `app`/`worker`/`scheduler` wait for `service_completed_successfully`. |
-| `keycloak` | `quay.io/keycloak/keycloak:26.x` (dev `start-dev --import-realm`); prod image from `docker/keycloak/Dockerfile` (`start --optimized`, `KC_CACHE=ispn`) | — | `8081:8080` (dev) | yes, ≥2 replicas clustered | DB `keycloak` on the same Postgres (`docker/postgres/init` creates it). Dev realm import `docker/keycloak/realm-lms.json` (realm, roles, clients, dev users). Health on management port 9000 `/health/ready`. |
+| `keycloak` | upstream `quay.io/keycloak/keycloak:26.x` everywhere (dev `start-dev --import-realm`; prod `start`, clustered cache `ispn` by default). No custom image is built or published (D-33). | — | `8081:8080` (dev) | yes, ≥2 replicas clustered | DB `keycloak` on the same Postgres (`docker/postgres/init` creates it). Dev realm import `docker/keycloak/realm-lms.json` (realm, roles, clients, dev users). Prod: customers import/configure the documented realm (§10.1) in their upstream Keycloak. Health on management port 9000 `/health/ready`. |
 | `mailpit` | `axllent/mailpit` | — | `8025` UI, `1025` SMTP | **dev only** | Also Keycloak's SMTP in dev. |
 | one-off | same as app | `docker compose run --rm app php artisan migrate --force` | — | yes | Admin processes (12-factor XII). |
 
@@ -134,7 +134,8 @@ erDiagram
         char(26) public_id UK "ULID, exposed in API"
         varchar(255) keycloak_sub UK "nullable until first login; OIDC sub"
         varchar(255) email UK "lowercased, synced from token"
-        varchar(20) role "employee|manager|hr_admin; cache of Keycloak realm role"
+        varchar(20) role "employee|manager|hr_admin; cache of the base realm role"
+        boolean is_admin "default false; cache of realm role admin (D-29)"
         bigint department_id FK "nullable, restrictOnDelete"
         bigint manager_id FK "nullable -> users, nullOnDelete"
         varchar(50) employee_code UK "nullable"
@@ -213,7 +214,7 @@ erDiagram
     user_admin_audits {
         bigint id PK
         char(26) public_id UK "ULID"
-        bigint actor_id FK "-> users (hr_admin)"
+        bigint actor_id FK "-> users (admin)"
         bigint target_user_id FK "nullable -> users (null if create failed before the local row)"
         varchar(255) keycloak_user_id "nullable"
         varchar(30) action "create|update_profile|enable|disable|assign_role|password_reset|compensate_delete"
@@ -240,13 +241,13 @@ erDiagram
 Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cache_locks`, `jobs`, `job_batches` (unused with Redis, kept as a fallback driver, D-23), `failed_jobs` (used). **Not created** (D-20): `password_reset_tokens` (drop it from the stock users migration), `personal_access_tokens` (do not run `install:api` with Sanctum; create `routes/api.php` by hand). Keycloak keeps its own tables in the separate `keycloak` database.
 
 ### Enums (`app/Enums`, string-backed)
-`Role`, `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module` (`holidays`, `reports`, `api`, `notifications`, `multi_level_approval`, `delegation`). Models cast columns to these enums.
+`Role` (`employee`, `manager`, `hr_admin`, `admin`; `users.role` holds only a base role, `admin` is mirrored to `users.is_admin`, D-29), `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module` (`holidays`, `reports`, `api`, `notifications`, `user_management`, `multi_level_approval`, `delegation`). Models cast columns to these enums.
 
 ## 5. Domain components
 
 | Class | Responsibility |
 |---|---|
-| `App\Services\WorkingDayCalculator` | `count(CarbonImmutable $start, CarbonImmutable $end, DayPart $part, array $weekendIsoDays, array $holidayDates): float`. A **pure function** with no DB access, so it is unit-testable. A thin wrapper `forRange()` loads holidays (only if the `holidays` module is on) and weekend config. |
+| `App\Services\WorkingDayCalculator` | `count(CarbonImmutable $start, CarbonImmutable $end, DayPart $part, array $weekendIsoDays, array $holidayDates): float`. A **pure function** with no DB access, so it is unit-testable. A thin wrapper `forRange()` loads holidays (only if the `holidays` module is on) and the weekend days from `Settings::get('work.weekend_days')` (override ?? `LMS_WEEKEND_DAYS`, D-30). |
 | `App\Services\LeaveBalanceService` | `balance()`, `pending()`, `available()`, `summary(User, int $year)` (entitled/used/pending/available per type). |
 | `App\Actions\Leave\SubmitLeaveRequest` | Validation V1–V8 (USE_CASES §3.4) inside `DB::transaction`, with `User::lockForUpdate()` on the requester row to serialise that user's submissions. |
 | `App\Actions\Leave\ApproveLeaveRequest` / `RejectLeaveRequest` / `CancelLeaveRequest` | Lock the request row (`lockForUpdate`). Assert the current status, else throw `InvalidTransition` (409). Write the ledger entry + action row. Dispatch the notification `afterCommit`. |
@@ -254,13 +255,14 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 | `App\Actions\Users\DeactivateUser` | Set inactive, delete the user's sessions, cancel pending requests. (JWTs are stateless: `KeycloakJwtGuard` refuses inactive users.) |
 | `App\Actions\Users\UpdateUserAction` | HR edit. LMS fields always (department, manager with cycle check, joining date, employee code, designation, employment type; first `date_of_joining` → `GrantInitialEntitlement`). Profile fields (email, first/last name) only with `user_management` on and a non-federated user: Keycloak `PUT` first, then mirror. Audited. |
 | `App\Actions\Users\CreateUserAction` | UC-U2. `KeycloakAdminClient::createUser()` (enabled, no credentials) → id → role mapping → `DB::transaction` insert `users` with `keycloak_sub` + LMS fields → `executeActionsEmail([UPDATE_PASSWORD, VERIFY_EMAIL])` after commit (link lifespan `config('keycloak.actions_email_lifespan')`, default 86400 s). Local failure ⇒ `deleteUser()` compensation + `compensate_delete` audit. |
-| `App\Actions\Users\AssignRolesAction` | UC-U6. Allow-list, `UserAdminGuard` (G2–G3 under Redis lock `lock:hr-admin-guard`), add the new LMS realm role, remove the other two, mirror `users.role`. Audited. |
+| `App\Actions\Users\AssignRolesAction` | UC-U6. Allow-list `employee|manager|hr_admin|admin`, `UserAdminGuard` (G2–G3 under Redis lock `lock:admin-guard`), set the base realm role (remove the other two), add/remove `admin`, mirror `users.role` + `users.is_admin`. Audited. |
+| `App\Actions\Settings\UpdateWorkingWeek` | UC-H16 (D-30). Validates ISO weekdays 1–7, unique, ≤ 6 items; writes or deletes `work.weekend_days`; invalidates the settings cache. Never touches existing `leave_requests.days`. |
 | `App\Actions\Users\SetUserEnabledAction` | UC-U4. Guardrails, Keycloak `enabled` flag, on disable `logoutUser()` then `DeactivateUser`; on enable local `is_active=true`. Audited. |
 | `App\Actions\Users\SendPasswordResetAction` | UC-U5. Refuses federated users. `executeActionsEmail([UPDATE_PASSWORD])`. Audited. |
 | `App\Services\UserAdminGuard` | G2–G5 checks (USE_CASES §3.11). Pure parts unit-tested. |
 | `App\Support\Keycloak\KeycloakAdminClient` (interface) + `HttpKeycloakAdminClient` | Admin REST wrapper: `searchUsers`, `countUsers`, `getUser`, `createUser`, `updateUser`, `deleteUser`, `setEnabled`, `logoutUser`, `executeActionsEmail`, `realmRolesOf`, `addRealmRoles`, `removeRealmRoles`. Client-credentials token for `lms-admin` cached in Redis (`keycloak:admin-token`, TTL = `expires_in − 30 s`). Maps Keycloak 409 → `IdpConflict`, connect error/timeout/5xx → `IdpUnavailable`, federation refusal → `IdpReadOnly`. Bound in a service provider; tests bind `FakeKeycloakAdminClient`. |
 | `App\Models\UserAdminAudit` | Append-only like the ledger (`update`/`delete` throw). |
-| `App\Auth\KeycloakUserProvisioner` | `provision(array $claims): User`. Find by `keycloak_sub`, else link by verified email, else create. Sync `name`, `email`, `role` (`Role::fromKeycloakRoles(realm_access.roles)`, highest wins; none → `AuthorizationException`). Grants initial entitlement when a `date_of_joining` claim first appears. Used by web callback and API guard. |
+| `App\Auth\KeycloakUserProvisioner` | `provision(array $claims): User`. Find by `keycloak_sub`, else link by verified email, else create. Sync `name`, `email`, `role` (`Role::fromKeycloakRoles(realm_access.roles)`, highest base role wins; none → `AuthorizationException`) and `is_admin` (`admin` in `realm_access.roles`). Grants initial entitlement when a `date_of_joining` claim first appears. Used by web callback and API guard. |
 | `App\Auth\KeycloakJwtGuard` | Custom guard `keycloak-jwt` (`Auth::extend`). Reads `Authorization: Bearer`, verifies RS256 signature with `JwksCache`, checks `iss` = `{KEYCLOAK_PUBLIC_URL}/realms/{realm}`, `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES`, `exp`/`nbf` (`KEYCLOAK_JWT_LEEWAY`), then `KeycloakUserProvisioner` and `is_active`. Any failure → 401 problem+json. Uses `firebase/php-jwt`. |
 | `App\Auth\JwksCache` | Fetches `{KEYCLOAK_BASE_URL}/realms/{realm}/protocol/openid-connect/certs` and caches it (`Cache::remember('keycloak:jwks', KEYCLOAK_JWKS_CACHE_TTL)` in Redis). On unknown `kid`, refetches once (key rotation), guarded by a Redis lock to avoid stampedes. |
 | `App\Http\Controllers\Web\Auth\KeycloakLoginController` | `redirect()` (Socialite → Keycloak, `state` + PKCE), `callback()` (code exchange, verify ID/access token, provision, `Auth::login`, `session()->regenerate()`, store `id_token` in session), `logout()` (invalidate session, redirect to end-session endpoint with `id_token_hint` + `post_logout_redirect_uri=APP_URL`). |
@@ -289,14 +291,15 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 | GET | `/holidays` | `holidays.index` | auth | `holidays` |
 | resource | `/admin/holidays` | `admin.holidays.*` | hr_admin | `holidays` |
 | resource | `/admin/users` (index, show, edit, update of LMS fields) + POST `/admin/users/{user}/deactivate`, `/activate` | `admin.users.*` | hr_admin | core |
-| GET/POST | `/admin/users/create`, `/admin/users` (store) + PUT `/admin/users/{user}/roles`, POST `/admin/users/{user}/enable`, `/disable`, `/password-reset` (Keycloak-backed, D-22) | `admin.users.create/.store/.roles/.enable/.disable/.password-reset` | hr_admin | `user_management` |
+| GET/POST | `/admin/identity-users` (Keycloak list/detail, 503 page when Keycloak is down, D-32), `/admin/users/create`, `/admin/users` (store) + PUT `/admin/users/{user}/roles`, POST `/admin/users/{user}/enable`, `/disable`, `/password-reset` (Keycloak-backed, D-22) | `admin.identity-users.*`, `admin.users.create/.store/.roles/.enable/.disable/.password-reset` | admin | `user_management` |
 | POST | `/admin/users/{user}/adjustments` | `admin.adjustments.store` | hr_admin | core |
 | resource | `/admin/departments` | `admin.departments.*` | hr_admin | core |
 | resource | `/admin/leave-types` (no destroy) | `admin.leave-types.*` | hr_admin | core |
 | GET | `/admin/reports/requests` (`?format=csv`) | `admin.reports.requests` | hr_admin | `reports` |
 | GET | `/admin/reports/balances` (`?format=csv`) | `admin.reports.balances` | hr_admin | `reports` |
-| GET/PUT | `/admin/settings/branding` (multipart) + DELETE `/admin/settings/branding/{asset}` | `admin.branding.*` | hr_admin | core |
-| GET/PUT | `/admin/settings/modules` | `admin.modules.*` | hr_admin | core |
+| GET/PUT | `/admin/settings/branding` (multipart) + DELETE `/admin/settings/branding/{asset}` | `admin.branding.*` | admin | core |
+| GET/PUT | `/admin/settings/modules` | `admin.modules.*` | admin | core |
+| GET/PUT | `/admin/settings/working-week` | `admin.working-week.*` | hr_admin | core |
 | GET | `/branding/{asset}` (`logo`\|`favicon`) | `branding.asset` | public | core |
 | GET | `/healthz`, `/readyz` | — | public, no session | core |
 
@@ -315,9 +318,9 @@ Middleware on every `/api/v1` route: `module:api` (404 when off) → `auth:keycl
 | Approvals | `GET /approvals?filter[status]=pending` | manager, hr_admin |
 | Balances / ledger | `GET /users/{id}/balances`, `GET /users/{id}/ledger-entries`, `POST /users/{id}/ledger-entries` (adjustment) | self/manager-of/hr_admin; write hr_admin |
 | Users (LMS fields) | `GET /users`, `GET /users/{id}`, `PATCH /users/{id}` (department, manager, joining date, codes; role read-only here), `POST /users/{id}/deactivate`, `/activate` | hr_admin (manager: own reports, read) |
-| Identity admin (`user_management` module, D-22) | `GET/POST /admin/users` (`Idempotency-Key` on POST), `GET/PATCH /admin/users/{id}`, `POST /admin/users/{id}/enable`, `/disable`, `PUT /admin/users/{id}/roles`, `POST /admin/users/{id}/password-reset` | hr_admin |
+| Identity admin (`user_management` module, D-22) | `GET/POST /admin/users` (`Idempotency-Key` on POST), `GET/PATCH /admin/users/{id}`, `POST /admin/users/{id}/enable`, `/disable`, `PUT /admin/users/{id}/roles`, `POST /admin/users/{id}/password-reset`. Keycloak down ⇒ 503 `IDP_UNAVAILABLE` on all of them, no local fallback (D-32). | admin |
 | Departments | `GET/POST /departments`, `GET/PATCH/DELETE /departments/{id}` | read any; write hr_admin |
-| Settings | `GET/PATCH /settings/branding`, `DELETE /settings/branding` (reset), `PUT/DELETE /settings/branding/assets/{asset}`, `GET /modules`, `PATCH /modules/{key}` | hr_admin (branding GET: any) |
+| Settings | `GET/PATCH /settings/branding`, `DELETE /settings/branding` (reset), `PUT/DELETE /settings/branding/assets/{asset}`, `GET /modules`, `PATCH /modules/{key}`; `GET/PATCH /settings/working-week` (D-30) | branding + modules: admin (branding GET: any); working week: hr_admin (GET: any) |
 | Reports (`reports` module) | `GET /reports/leave-requests`, `GET /reports/balances` (`Accept: application/json` or `text/csv`) | hr_admin |
 | Health (outside v1, no auth) | `GET /healthz`, `GET /readyz` | public |
 
@@ -339,6 +342,7 @@ See USE_CASES §3.6 (diagram + transition/actor table). Implementation: `LeaveSt
 | `brand.logo_path` | none → `public/img/default-logo.png` | upload: `mimes:png,jpg,jpeg,webp`, `max:1024` KB, `dimensions:max_width=1024,max_height=1024` | header, emails (absolute URL) |
 | `brand.favicon_path` | none → `public/favicon.ico` | `mimes:png,ico`, `max:256` | `<link rel=icon>` |
 | `modules.disabled` | `[]` | array of `Module` values ⊆ licensed | `Modules` |
+| `work.weekend_days` | `LMS_WEEKEND_DAYS` (default `6,7`) | array of int 1–7, distinct, ≤ 6 items (at least one working day); edited by `hr_admin` (UC-H16, D-30) | `WorkingDayCalculator::forRange` (new submissions/approval checks only; stored `days` are never recalculated) |
 
 `config/branding.php` holds the env defaults plus `disk => env('BRANDING_DISK', 's3')`. The `s3` disk (private bucket `AWS_BUCKET`) is configured by the standard `AWS_*` env vars (+ `AWS_ENDPOINT`, `AWS_USE_PATH_STYLE_ENDPOINT=true` for RustFS; any S3-compatible store in prod). In dev the bucket is created by the `s3-init` container. `config/filesystems.php` also keeps a `branding` local disk (`storage_path('app/branding')`) for single-node installs only; it breaks with >1 replica (D-24). Composer dep: `league/flysystem-aws-s3-v3`.
 
@@ -367,6 +371,8 @@ return [
 ```
 
 `Modules::enabled($m) = in_array($m, licensed) && registry[$m].available && !in_array($m, Settings::get('modules.disabled'))`.
+
+**Deployment checklist (D-34):** for a customer whose realm is backed by a directory (LDAP/AD user federation or Entra ID / SAML brokering), leave `user_management` **out** of `MODULES_ENABLED`; users and roles are then managed in the directory/Keycloak. `.env.example` keeps it listed with a comment saying so. There is no auto-detection.
 
 Gating points (all four are required):
 
@@ -407,11 +413,11 @@ Gating points (all four are required):
 | `REDIS_DB`, `REDIS_CACHE_DB`, `REDIS_SESSION_DB`, `REDIS_QUEUE_DB`, `REDIS_PREFIX` | `0`, `1`, `2`, `3`, `lms-` | separate logical DBs so `cache:clear` never drops sessions or jobs |
 | `SESSION_SECURE_COOKIE` | `false` (prod `true`) | |
 | `MAIL_MAILER`, `MAIL_HOST`, `MAIL_PORT`, `MAIL_FROM_ADDRESS` | `smtp`, `mailpit`, `1025`, `noreply@example.test` | from-name = brand name |
-| `LMS_WEEKEND_DAYS` | `6,7` | ISO weekdays |
+| `LMS_WEEKEND_DAYS` | `6,7` | ISO weekdays; default only, `hr_admin` may override via `work.weekend_days` (D-30) |
 | `LEAVE_YEAR_START_MONTH` | `1` | 1–12, first month of the leave year (D-26). `4` = April–March. |
 | `LMS_SL_MAX_BACKDATE_DAYS` | `7` | seed default for SL `max_backdate_days` |
 | `APP_BRAND_NAME`, `BRAND_PRIMARY_COLOR`, `BRAND_ACCENT_COLOR` | `Leave Manager`, `#1f6feb`, `#0e8a16` | |
-| `MODULES_ENABLED` | `holidays,reports,api,notifications,user_management` | licensed set |
+| `MODULES_ENABLED` | `holidays,reports,api,notifications,user_management` | licensed set; drop `user_management` for directory-backed realms (D-34) |
 | `FILESYSTEM_DISK`, `BRANDING_DISK` | `s3`, `s3` | `branding` (local) only for single-node installs |
 | `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` | `lmsdev`, `lmsdevsecret` | dev RustFS server credentials (compose only) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `AWS_BUCKET`, `AWS_ENDPOINT`, `AWS_USE_PATH_STYLE_ENDPOINT` | `${RUSTFS_ACCESS_KEY}`, `${RUSTFS_SECRET_KEY}`, `us-east-1`, `lms`, `http://rustfs:9000`, `true` | any S3-compatible store in prod |
@@ -425,7 +431,7 @@ Gating points (all four are required):
 | `KEYCLOAK_JWKS_CACHE_TTL` | `3600` | seconds, Redis |
 | `KEYCLOAK_ADMIN_CLIENT_ID`, `KEYCLOAK_ADMIN_CLIENT_SECRET` | `lms-admin`, `lms-admin-dev-secret` | service-account client for the Admin REST API (D-22). **Secret**. |
 | `KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD` | `admin`, `admin` | compose only: Keycloak bootstrap admin (`KC_BOOTSTRAP_ADMIN_*`) |
-| Keycloak container | — | `KC_DB=postgres`, `KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak`, `KC_DB_USERNAME`, `KC_DB_PASSWORD`, `KC_HOSTNAME=${KEYCLOAK_PUBLIC_URL}`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`, `KC_HTTP_ENABLED=true` (dev), `KC_HEALTH_ENABLED=true`; prod image adds `KC_CACHE=ispn` (clustered) |
+| Keycloak container | — | `KC_DB=postgres`, `KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak`, `KC_DB_USERNAME`, `KC_DB_PASSWORD`, `KC_HOSTNAME=${KEYCLOAK_PUBLIC_URL}`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`, `KC_HTTP_ENABLED=true` (dev), `KC_HEALTH_ENABLED=true`; prod runs the upstream image with `start` (cache `ispn` is the default, D-33) |
 | `APP_SERVER_MODE` | `octane` | `octane` (FrankenPHP worker mode) or `classic` (non-worker FrankenPHP, debugging fallback) |
 | `OCTANE_SERVER` | `frankenphp` | |
 | `OCTANE_WORKERS` | `auto` | workers per replica (auto = CPU count) |
@@ -441,8 +447,8 @@ Gating points (all four are required):
 |---|---|
 | AuthN web | Keycloak OIDC auth code (client `lms-web`, `state` + PKCE) via Socialite. ID/access token verified (`JwksCache`), user provisioned/synced (`KeycloakUserProvisioner`), Laravel session guard, session regenerated on login. `is_active` checked at callback and by `EnsureUserIsActive` on every request. Logout is RP-initiated (end-session with `id_token_hint`). Passwords, MFA, lockout and brute-force detection live in Keycloak. |
 | AuthN API | Bearer JWT (RS256) from Keycloak (client `lms-api-cli`, public + PKCE). Guard `keycloak-jwt` checks signature (JWKS cached in Redis, refetch on unknown `kid`), `iss`, `aud`/`azp` against `KEYCLOAK_ALLOWED_AUDIENCES`, `exp`/`nbf` with `KEYCLOAK_JWT_LEEWAY`. No app-issued tokens. Inactive user → 401. |
-| Roles | Keycloak realm roles are the RBAC authority; `users.role` is a cache refreshed on every login/API call. HR cannot change roles in the app (D-20). |
-| AuthZ | Role enum + **Policies** (`LeaveRequestPolicy`: `view, create, cancel, decide`; `UserPolicy`, `LeaveTypePolicy`, `HolidayPolicy`, `DepartmentPolicy`, `SettingsPolicy` → `hr_admin`). `Gate::before` is **not** used (HR must not approve their own requests). Every controller method calls `$this->authorize()` / `Gate::authorize()`. |
+| Roles | Keycloak realm roles are the RBAC authority; `users.role` (base role) and `users.is_admin` are caches refreshed on every login/API call. Roles change in the app only through UC-U6, by an `admin` (D-22, D-29). |
+| AuthZ | Role enum + **Policies** (`LeaveRequestPolicy`: `view, create, cancel, decide`; `UserPolicy` HR fields, `LeaveTypePolicy`, `HolidayPolicy`, `DepartmentPolicy`, `SettingsPolicy::updateWorkingWeek` → `hr_admin`; `SettingsPolicy::manageBranding`/`manageModules`, `UserPolicy::manageIdentity` (UC-U*) → `admin`, D-29). `Gate::before` is **not** used (HR must not approve their own requests). Every controller method calls `$this->authorize()` / `Gate::authorize()`. |
 | CSRF | Default `web` middleware (`VerifyCsrfToken`/`ValidateCsrfToken`). API uses Bearer tokens only (no cookie-auth SPA). OIDC `state` protects the callback. |
 | Rate limiting | `RateLimiter::for('login', 10/min by IP)` on `/auth/callback`, `RateLimiter::for('api', 60/min by user id or IP)` with `X-RateLimit-*` / `Retry-After` headers (D-21). Credential brute-force protection is Keycloak's. |
 | Input | Form Requests on every write. Eloquent bindings only (no raw string SQL with input). Mass assignment via `$fillable`. |
@@ -456,12 +462,12 @@ Gating points (all four are required):
 
 | Item | Spec |
 |---|---|
-| Realm | `lms` per deployment. Realm roles `employee`, `manager`, `hr_admin` (default role for new users: `employee`). |
+| Realm | `lms` per deployment. Realm roles `employee`, `manager`, `hr_admin` (base, exactly one per user) and `admin` (additive: branding, modules, identity admin, D-29). Default role for new users: `employee`. Customers run **upstream** Keycloak and import/configure this realm; the LMS publishes no Keycloak image or theme (D-33). |
 | Clients | `lms-web`: confidential, standard flow only, redirect `${APP_URL}/auth/callback`, post-logout redirect `${APP_URL}/*`. `lms-api-cli`: public, standard flow + PKCE S256, loopback redirect URIs. `lms-dev-cli` (**dev realm import only**): direct access grants for local smoke tests, never imported in prod. Both: realm roles in `realm_access.roles`. `lms-admin`: confidential, **service account only** (client credentials, no browser flows), service-account roles `realm-management`: `manage-users`, `view-users`, `query-users` — never `realm-admin` (D-22). |
 | Claims used | `sub` → `users.keycloak_sub`, `email`, `email_verified`, `name`, `realm_access.roles`, optional `date_of_joining` (user-attribute mapper). |
-| Enterprise | User federation (LDAP / Active Directory), identity brokering (SAML 2.0, OIDC e.g. Entra ID / Azure AD, Google), MFA/OTP/WebAuthn, password policy — all configured in Keycloak per customer, no app change. Login theme white-labelled per customer (UC-B9). |
+| Enterprise | User federation (LDAP / Active Directory), identity brokering (SAML 2.0, OIDC e.g. Entra ID / Azure AD, Google), MFA/OTP/WebAuthn, password policy — all configured in Keycloak per customer, no app change. Login page branding (display name, optional theme) is the customer's own Keycloak configuration (UC-B9, D-33). Directory-backed realms run without `user_management` (D-34). |
 | Resource authorization | Laravel Policies (direct manager approves, nobody approves own, HR override rules). Keycloak roles only say *what kind of user*. |
-| Availability | Prod: ≥2 Keycloak replicas, clustered (Infinispan, `KC_CACHE=ispn`), DB `keycloak` on the managed Postgres. The app only needs Keycloak at login and for JWKS refresh; JWT validation works from the Redis-cached JWKS during short Keycloak outages. |
+| Availability | Prod: ≥2 Keycloak replicas, clustered (Infinispan, `KC_CACHE=ispn`), DB `keycloak` on the managed Postgres. The app only needs Keycloak at login and for JWKS refresh; JWT validation works from the Redis-cached JWKS during short Keycloak outages. Identity admin (`/admin/users`, web identity-user pages) needs the Admin API and returns 503 `IDP_UNAVAILABLE` during an outage, with no stale local fallback; HR pages on local data keep working (D-32). |
 | Health | `/readyz` does **not** call Keycloak (avoids cascading restarts); Keycloak exposes its own `/health/ready` (`KC_HEALTH_ENABLED`). |
 
 ## 11. Observability
@@ -483,7 +489,7 @@ Gating points (all four are required):
 - Run as a one-off **before** rolling out new app containers: `docker compose run --rm app php artisan migrate --force`. Never auto-migrate in the web entrypoint (avoids races with N replicas).
 - Expand/contract for breaking changes: add nullable column → deploy code writing both → backfill (one-off command) → enforce NOT NULL / drop old in a later release.
 - Postgres-specific DDL (`btree_gist`, exclusion constraint, partial unique indexes, CHECKs) via `DB::statement()` inside migrations. Feature tests run on real Postgres, so these are tested.
-- Seeders: `LeaveTypeSeeder` (CL/SL/EL/LWP, idempotent `updateOrCreate` by code) runs in all envs. `DemoSeeder` runs **only** when `APP_ENV=local|testing`: departments CE/IT/MH/EC/IC/CL/CH from the original, 2026+2027 holidays, and the three **dev users** that also exist in the dev Keycloak realm import (`docker/keycloak/realm-lms.json`): `alice` (`alice@example.test`, employee, IT, manager = bob), `bob` (`bob@example.test`, manager, IT), `carol` (`carol@example.test`, hr_admin, HR). Local rows are seeded with `keycloak_sub = null` and are linked by verified email on first login (USE_CASES §3.10). Passwords exist only in Keycloak (dev value documented in the realm file, DEV ONLY). No other demo users are seeded, because users without a Keycloak account cannot log in.
+- Seeders: `LeaveTypeSeeder` (CL/SL/EL/LWP, idempotent `updateOrCreate` by code) runs in all envs. `DemoSeeder` runs **only** when `APP_ENV=local|testing`: departments CE/IT/MH/EC/IC/CL/CH from the original, 2026+2027 holidays, and the four **dev users** that also exist in the dev Keycloak realm import (`docker/keycloak/realm-lms.json`): `alice` (`alice@example.test`, employee, IT, manager = bob), `bob` (`bob@example.test`, manager, IT), `carol` (`carol@example.test`, hr_admin, HR), `dave` (`dave@example.test`, employee + `admin`, IT, D-29). Local rows are seeded with `keycloak_sub = null` and are linked by verified email on first login (USE_CASES §3.10). Passwords exist only in Keycloak (dev value documented in the realm file, DEV ONLY). No other demo users are seeded, because users without a Keycloak account cannot log in.
 - Migration file order: departments → users (alter stock: drop `password`, `remember_token`, `email_verified_at`, `password_reset_tokens`; add `public_id`, `keycloak_sub`, LMS columns) → leave_types → holidays → leave_requests → leave_request_actions → leave_ledger_entries → settings → user_admin_audits.
 - Keycloak's schema lives in the separate `keycloak` database and is migrated by Keycloak itself on start.
 
@@ -500,7 +506,7 @@ Single workflow `.github/workflows/ci.yml`, triggers: `pull_request`, `push` to 
 | `smoke` | ubuntu-latest | `cp .env.example .env`, `docker compose up -d --build --wait` (all healthchecks incl. keycloak, rustfs, s3-init), `docker compose run --rm app php artisan key:generate && … migrate --force --seed`, `curl -fsS localhost:8080/healthz`, `curl -fsS localhost:8080/readyz`, `curl -fsS localhost:8081/realms/lms/.well-known/openid-configuration`, then `docker compose down -v`. Dumps `docker compose logs` on failure. | `lint, unit, feature` |
 | `package` | ubuntu-latest, `permissions: {contents: read, packages: write}`, `if: github.event_name == 'push'` | `docker/setup-qemu-action` (tags only), `docker/setup-buildx-action`, `docker/login-action` (ghcr.io, `${{ github.actor }}`, `GITHUB_TOKEN`), `docker/metadata-action` (tags `type=ref,event=branch`, `type=semver,pattern={{version}}`, `type=sha`), `docker/build-push-action` ×2 (`target: app-prod` → `ghcr.io/${{ github.repository }}/app`, `target: nginx` → `ghcr.io/${{ github.repository }}/nginx`). **Platforms:** `linux/amd64` on `main`; `linux/amd64,linux/arm64` on `v*` tags. `cache-from/to: type=gha`. | `lint, openapi, unit, feature, smoke` |
 
-Image names are derived from `github.repository` and lowercased (`${GITHUB_REPOSITORY,,}`), which gives `ghcr.io/heyadityak/lms/app` and `ghcr.io/heyadityak/lms/nginx` for the `heyadityak/lms` repository. The test jobs use setup-php instead of the image for speed; the image itself is validated by `smoke` and `package`, and parity is kept on PHP 8.4, Postgres 17 and Redis 7 (D-10, D-25). The prod Keycloak image (`docker/keycloak/Dockerfile`) is built per deployment from the upstream image and is not published by this workflow in MVP.
+Image names are derived from `github.repository` and lowercased (`${GITHUB_REPOSITORY,,}`), which gives `ghcr.io/heyadityak/lms/app` and `ghcr.io/heyadityak/lms/nginx` for the `heyadityak/lms` repository. The test jobs use setup-php instead of the image for speed; the image itself is validated by `smoke` and `package`, and parity is kept on PHP 8.4, Postgres 17 and Redis 7 (D-10, D-25). No Keycloak image is built or published: customers run upstream `quay.io/keycloak/keycloak` and import/configure the documented realm (D-33).
 
 ## 14. Sources
 - Laravel 12 release notes (PHP 8.2–8.5 support): https://laravel.com/docs/12.x/releases

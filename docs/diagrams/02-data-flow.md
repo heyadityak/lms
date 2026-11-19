@@ -22,7 +22,7 @@ Business rules come from [USE_CASES.md](../USE_CASES.md); tables from [SYSTEM_DE
 | D5 Leave requests | Postgres | `leave_requests` | P2, P3, P4 |
 | D6 Request actions (audit) | Postgres | `leave_request_actions` | P2, P3, P4 |
 | D7 Leave ledger | Postgres | `leave_ledger_entries` (append-only) | P5 only |
-| D8 Settings | Postgres | `settings` (`brand.*`, `modules.disabled`) | P9 |
+| D8 Settings | Postgres | `settings` (`brand.*`, `modules.disabled`, `work.weekend_days`) | P9 |
 | D9 Failed jobs | Postgres | `failed_jobs` | P7 |
 | D10 Branding assets | RustFS (S3-compatible), `BRANDING_DISK=s3` | `logo-{sha1}.{ext}`, `favicon-{sha1}.{ext}` | P9 |
 | D11 Session store | Redis DB 2 | `lms-…session:{id}` (user id, `id_token`, CSRF token) | P1 |
@@ -38,6 +38,7 @@ flowchart LR
     EMP[Employee]
     MGR[Manager]
     HR[HR Admin]
+    ADM[Admin]
     API[API client]
     OP[Operator / env]
     KC[Keycloak IdP]
@@ -50,7 +51,8 @@ flowchart LR
     LMS -->|balances, request status,<br/>holiday calendar| EMP
     MGR -->|approve / reject + comment| LMS
     LMS -->|approval inbox, team balances| MGR
-    HR -->|departments, leave types, holidays,<br/>adjustments, branding, modules,<br/>identity users + roles| LMS
+    HR -->|departments, leave types, holidays,<br/>working week, adjustments,<br/>users' HR fields| LMS
+    ADM -->|branding, modules,<br/>identity users + roles| LMS
     LMS -->|reports CSV, all requests| HR
     API -->|Bearer JWT + JSON leave ops| LMS
     LMS -->|JSON / problem+json| API
@@ -94,7 +96,7 @@ flowchart LR
     EMP -->|browser redirect / Bearer JWT| P1
     KC -->|code → tokens, JWKS| P1
     P1 -->|cached JWKS| D12
-    P1 -->|upsert by keycloak_sub,<br/>sync name, email, role| D1
+    P1 -->|upsert by keycloak_sub,<br/>sync name, email, role, is_admin| D1
     P1 -->|session: user id, id_token| D11
     P1 -->|authenticated user| P2
 
@@ -102,7 +104,7 @@ flowchart LR
     D12 -->|stored response if key replayed| P2
     D3 -->|quota, allow_half_day,<br/>max_backdate_days, tracks_balance| P2
     D4 -->|holiday dates if module on| P2
-    D8 -->|modules.disabled| P2
+    D8 -->|modules.disabled,<br/>work.weekend_days| P2
     D5 -->|overlaps, pending days| P2
     P5 -->|available balance| P2
     P2 -->|request status=pending, days| D5
@@ -142,6 +144,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     HR[HR Admin]
+    ADM[Admin]
     OP[Operator / env]
     CLK[Scheduler tick]
     BR[Any browser]
@@ -150,7 +153,7 @@ flowchart LR
     P5((P5<br/>Balance ledger))
     P6((P6<br/>Year-start accrual<br/>+ carry-forward))
     P8((P8<br/>Reports / CSV))
-    P9((P9<br/>Branding + module<br/>settings))
+    P9((P9<br/>Branding, module +<br/>working-week settings))
     P10((P10<br/>Master data:<br/>depts, types,<br/>holidays, LMS user fields))
     P11((P11<br/>Identity user admin<br/>module user_management))
 
@@ -182,11 +185,12 @@ flowchart LR
     P10 -->|first joining date → prorated grant,<br/>adjustment ± days| P5
     P10 -->|deactivate: cancel pending| D5
 
-    HR -->|create, profile, enable/disable,<br/>role, password reset| P11
-    P11 -->|admin token, hr-admin guard lock,<br/>idempotency| D12
+    ADM -->|create, profile, enable/disable,<br/>roles, password reset| P11
+    P11 -->|admin token, admin guard lock,<br/>idempotency| D12
     P11 -->|REST writes as lms-admin| KC
     KC -->|user id, federationLink,<br/>409 / 5xx errors| P11
-    P11 -->|mirror: keycloak_sub, name,<br/>email, role, is_active| D1
+    P11 -->|503 IDP_UNAVAILABLE if KC down,<br/>no local fallback| ADM
+    P11 -->|mirror: keycloak_sub, name,<br/>email, role, is_admin, is_active| D1
     P11 -->|every action + outcome| D14
     P11 -->|prorated grant if joining date set| P5
 
@@ -198,7 +202,8 @@ flowchart LR
     P8 -->|JSON page / CSV stream| HR
 
     OP -->|APP_BRAND_NAME, BRAND_*,<br/>MODULES_ENABLED licensed set| P9
-    HR -->|name, colours, logo, favicon,<br/>modules to disable| P9
+    ADM -->|name, colours, logo, favicon,<br/>modules to disable| P9
+    HR -->|weekend days| P9
     P9 -->|override rows| D8
     P9 -->|validated PNG / JPEG / WebP| D10
     P9 -->|forget settings:all| D12
@@ -209,7 +214,8 @@ flowchart LR
 
 Notes:
 - **P5 is the only writer of D7**, and it only appends. Balance is always derived (`SUM(days)`), never stored (D-02).
-- P1 never sees a password. It receives tokens from Keycloak, verifies them against the cached JWKS (D12), and mirrors identity into D1 (`keycloak_sub`, name, email, role).
+- P1 never sees a password. It receives tokens from Keycloak, verifies them against the cached JWKS (D12), and mirrors identity into D1 (`keycloak_sub`, name, email, role, is_admin).
 - P11 writes **Keycloak first**, then D1. If the D1 write fails after a create, P11 deletes the Keycloak user again (compensation) and records it in D14.
-- P9 never writes env. A module can be disabled only if it is licensed (D-14).
+- P9 never writes env. A module can be disabled only if it is licensed (D-14). `work.weekend_days` changes apply to new submissions only; stored `days` in D5 are never recalculated (D-30).
+- P11 reads Keycloak live; when Keycloak is down it answers 503 `IDP_UNAVAILABLE` and never serves D1 as a stale list (D-32).
 - `holidays` off ⇒ D4 is not read by P2 (D-17). `notifications` off ⇒ nothing is pushed to D13. `user_management` off ⇒ P11 does not exist; HR still edits LMS fields via P10.

@@ -90,13 +90,13 @@ Every 4xx/5xx from `/api/v1` is `application/problem+json`:
 | 400 | `BAD_REQUEST` | Malformed JSON, bad query syntax. |
 | 401 | `UNAUTHENTICATED` | Missing/invalid/expired Bearer JWT, wrong `iss`/`aud`, bad signature, user inactive or has no LMS role. Includes `WWW-Authenticate: Bearer error="invalid_token"`. |
 | 403 | `FORBIDDEN` | Authenticated, but a Policy denies (e.g. not the requester's manager, approving own request, employee cancelling started leave). |
-| 403 | `SELF_MODIFICATION_FORBIDDEN` | hr_admin tries to demote or disable themselves (D-22 G2). |
+| 403 | `SELF_MODIFICATION_FORBIDDEN` | An admin tries to change their own roles or disable themselves (D-22 G2, D-29). |
 | 404 | `NOT_FOUND` | Unknown id, resource not visible to the caller **where existence must not leak**, or module disabled. |
 | 406 | `NOT_ACCEPTABLE` | Report requested with an `Accept` other than JSON/CSV. |
 | 409 | `INVALID_TRANSITION` | State conflict, e.g. approving a request that is no longer pending. |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | Same `Idempotency-Key` still being processed. |
 | 409 | `DEPARTMENT_NOT_EMPTY` | Deleting a department that still has users. |
-| 409 | `LAST_HR_ADMIN` | Demoting/disabling the last active hr_admin (G3). |
+| 409 | `LAST_ADMIN` | Revoking `admin` from, or disabling, the last active admin (G3, D-29). |
 | 409 | `IDP_CONFLICT` | Keycloak returned 409 (duplicate username/email). |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Wrong `Content-Type`. |
 | 422 | `VALIDATION_FAILED` | Generic field validation. |
@@ -117,13 +117,13 @@ Every 4xx/5xx from `/api/v1` is `application/problem+json`:
 | 429 | `RATE_LIMITED` | Throttled. `Retry-After` set. |
 | 500 | `INTERNAL_ERROR` | Unexpected. Logged with `request_id`. |
 | 503 | `SERVICE_UNAVAILABLE` | Dependency down (e.g. JWKS cannot be fetched and no cached copy). |
-| 503 | `IDP_UNAVAILABLE` | Keycloak Admin API unreachable, timed out or 5xx; nothing written locally. `Retry-After` set. |
+| 503 | `IDP_UNAVAILABLE` | Keycloak Admin API unreachable, timed out or 5xx; nothing written locally. Applies to every `/admin/users` call incl. list/detail (no stale local fallback, D-32). `Retry-After` set. |
 
 ## 5. Authentication and authorization
 
 - OAuth 2.0 / OIDC with **Keycloak** (D-20). Clients get an access token from Keycloak (client `lms-api-cli`, auth code + PKCE; discovery at `{KEYCLOAK_PUBLIC_URL}/realms/lms/.well-known/openid-configuration`) and send `Authorization: Bearer <jwt>`. The app has no token endpoints.
 - The guard checks RS256 signature (JWKS cached in Redis), `iss` (`{KEYCLOAK_PUBLIC_URL}/realms/lms`), `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES` (`lms-web,lms-api-cli`), `exp`/`nbf` with `KEYCLOAK_JWT_LEEWAY`. User is provisioned/synced from claims on every call.
-- Each operation in the spec has `x-roles` (realm roles allowed to call it at all). Fine-grained rules (direct manager, not own request) are Policies and give **403**.
+- Each operation in the spec has `x-roles` (realm roles allowed to call it at all). Every user has exactly one base role (`employee`, `manager`, `hr_admin`); `admin` is an additional realm role for branding, modules and identity admin (D-29). Fine-grained rules (direct manager, not own request) are Policies and give **403**.
 - Visibility: lists only return what the caller may see (employee: own; manager: own + direct reports; hr_admin: all). Single-resource reads of something invisible return **404** (`NOT_FOUND`), not 403, so ids cannot be probed. Actions on a visible resource that the caller may not perform return **403**.
 
 ## 6. Reports (content negotiation)
@@ -151,11 +151,12 @@ Redis-backed `RateLimiter::for('api')`: 60 requests/min per user (by JWT `sub`),
 
 ## 9. Identity admin (`/admin/users`, D-22)
 
-- Gated by module `user_management` (404 when off) and role `hr_admin`.
+- Gated by module `user_management` (404 when off) and realm role `admin` (D-29).
 - Keycloak is written **first** through the `KeycloakAdminClient` interface (service account `lms-admin`, least privilege), then mirrored locally. Create compensates by deleting the Keycloak user if the local insert fails.
 - `POST /admin/users` accepts `Idempotency-Key` exactly like `POST /leave-requests` (§7); a replay never creates a second Keycloak user.
 - The API never accepts passwords. Creation and `password-reset` trigger Keycloak `execute-actions-email`.
-- `PUT /admin/users/{id}/roles` replaces the single LMS role (`{"roles": ["manager"]}`); roles outside the allow-list are 422.
+- `PUT /admin/users/{id}/roles` replaces the LMS roles: exactly one base role plus optionally `admin` (`{"roles": ["hr_admin", "admin"]}`); roles outside the allow-list `employee|manager|hr_admin|admin` are 422.
+- Keycloak unavailable ⇒ every `/admin/users` operation, including list and detail, returns `503 IDP_UNAVAILABLE`. There is no stale local fallback; `/users` (LMS fields, local data) keeps working (D-32).
 - Every call (success or failure) writes a `user_admin_audits` row.
 - Keycloak errors map to `IDP_CONFLICT` (409), `IDP_READ_ONLY` (422), `IDP_UNAVAILABLE` (503). Keycloak error bodies are never passed through to clients.
 

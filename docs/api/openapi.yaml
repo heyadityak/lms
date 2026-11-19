@@ -11,6 +11,8 @@ info:
     * Authentication: Keycloak OIDC Bearer JWT (decision D-20). Tokens are obtained
       from Keycloak (client `lms-api-cli`, auth code + PKCE), never from this API.
     * `x-roles` lists the Keycloak realm roles allowed to call an operation at all.
+      Every user holds exactly one base role (`employee`, `manager`, `hr_admin`); the
+      `admin` realm role (branding, modules, identity admin) is additive (D-29).
       Resource-level rules (direct manager, not own request) are Laravel Policies and
       yield 403.
     * Envelope `{data, meta, links}`; errors are RFC 9457 `application/problem+json`
@@ -21,8 +23,8 @@ info:
   contact:
     name: LMS architecture
   license:
-    name: Proprietary
-    identifier: LicenseRef-Proprietary
+    name: MIT
+    identifier: MIT
 servers:
   - url: '{baseUrl}/api/v1'
     description: One deployment per customer.
@@ -46,13 +48,13 @@ tags:
   - name: Users
     description: LMS-owned user fields (department, manager, joining date, active flag).
   - name: Identity admin
-    description: Keycloak-backed user administration. Requires the `user_management` module (D-22).
+    description: Keycloak-backed user administration, role `admin`. Requires the `user_management` module (D-22, D-29).
   - name: Balances
     description: Ledger-derived balances and ledger history.
   - name: Departments
     description: Organisational departments.
   - name: Settings
-    description: Branding and modules (white-label).
+    description: Branding and modules (white-label, role `admin`); working week (role `hr_admin`, D-30).
   - name: Reports
     description: Requires the `reports` module.
   - name: Health
@@ -687,7 +689,9 @@ paths:
       description: |
         Searches Keycloak (`search`, `first`, `max`) and merges LMS fields from the local mirror.
         Keycloak users without a local row get a mirror row on the fly, so every item has a ULID.
-      x-roles: [hr_admin]
+        No stale local fallback: if Keycloak is unavailable this (and every `/admin/users`
+        operation) returns 503 `IDP_UNAVAILABLE` (D-32).
+      x-roles: [admin]
       x-module: user_management
       parameters:
         - name: filter[q]
@@ -702,7 +706,7 @@ paths:
         - name: filter[role]
           in: query
           required: false
-          schema: {$ref: '#/components/schemas/Role'}
+          schema: {$ref: '#/components/schemas/AssignableRole'}
         - $ref: '#/components/parameters/PageNumber'
         - $ref: '#/components/parameters/PageSize'
       responses:
@@ -733,7 +737,7 @@ paths:
         `VERIFY_EMAIL` is sent after commit), then the local row with `keycloak_sub`. If the
         local write fails the Keycloak user is deleted (compensation). Audited in
         `user_admin_audits`. Supports `Idempotency-Key` (Redis, 24 h).
-      x-roles: [hr_admin]
+      x-roles: [admin]
       x-module: user_management
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -770,7 +774,7 @@ paths:
       tags: [Identity admin]
       operationId: adminGetUser
       summary: Identity user detail
-      x-roles: [hr_admin]
+      x-roles: [admin]
       x-module: user_management
       responses:
         '200': {$ref: '#/components/responses/IdentityUserOk'}
@@ -784,7 +788,7 @@ paths:
       operationId: adminUpdateUser
       summary: Update profile (Keycloak) and LMS fields in one call
       description: Profile fields of federated users (`federated=true`) are read-only (422 `IDP_READ_ONLY`).
-      x-roles: [hr_admin]
+      x-roles: [admin]
       x-module: user_management
       requestBody:
         required: true
@@ -808,7 +812,7 @@ paths:
       tags: [Identity admin]
       operationId: adminEnableUser
       summary: Enable in Keycloak and re-activate locally
-      x-roles: [hr_admin]
+      x-roles: [admin]
       x-module: user_management
       responses:
         '200': {$ref: '#/components/responses/IdentityUserOk'}
@@ -825,8 +829,8 @@ paths:
       tags: [Identity admin]
       operationId: adminDisableUser
       summary: Disable in Keycloak, log out all sessions, deactivate locally
-      description: Guardrails - not yourself (403 `SELF_MODIFICATION_FORBIDDEN`), not the last active hr_admin (409 `LAST_HR_ADMIN`).
-      x-roles: [hr_admin]
+      description: Guardrails - not yourself (403 `SELF_MODIFICATION_FORBIDDEN`), not the last active admin (409 `LAST_ADMIN`).
+      x-roles: [admin]
       x-module: user_management
       responses:
         '200': {$ref: '#/components/responses/IdentityUserOk'}
@@ -843,19 +847,20 @@ paths:
     put:
       tags: [Identity admin]
       operationId: adminSetUserRoles
-      summary: Replace the user's LMS realm role
+      summary: Replace the user's LMS realm roles
       description: |
-        Allow-list `employee`, `manager`, `hr_admin`; exactly one. Other realm roles are untouched.
-        Guardrails - no self-demotion (403), not the last active hr_admin (409), provider may
-        refuse for federated users (422 `IDP_READ_ONLY`).
-      x-roles: [hr_admin]
+        Allow-list `employee`, `manager`, `hr_admin`, `admin`: exactly one base role plus
+        optionally `admin`. Other realm roles are untouched. Guardrails - no change to your own
+        roles (403 `SELF_MODIFICATION_FORBIDDEN`), the last active admin cannot lose `admin`
+        (409 `LAST_ADMIN`), provider may refuse for federated users (422 `IDP_READ_ONLY`).
+      x-roles: [admin]
       x-module: user_management
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/RoleAssignment'}
-            example: {roles: [manager]}
+            example: {roles: [hr_admin, admin]}
       responses:
         '200': {$ref: '#/components/responses/IdentityUserOk'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
@@ -874,7 +879,7 @@ paths:
       operationId: adminSendPasswordReset
       summary: Send a Keycloak UPDATE_PASSWORD email
       description: Not available for federated users (422 `IDP_READ_ONLY`).
-      x-roles: [hr_admin]
+      x-roles: [admin]
       x-module: user_management
       responses:
         '202': {description: Email requested from Keycloak.}
@@ -984,7 +989,7 @@ paths:
       tags: [Settings]
       operationId: updateBranding
       summary: Override brand name / colours
-      x-roles: [hr_admin]
+      x-roles: [admin]
       requestBody:
         required: true
         content:
@@ -1001,7 +1006,7 @@ paths:
       tags: [Settings]
       operationId: resetBranding
       summary: Reset branding to env defaults (deletes override rows and stored assets)
-      x-roles: [hr_admin]
+      x-roles: [admin]
       responses:
         '200': {$ref: '#/components/responses/BrandingOk'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
@@ -1024,7 +1029,7 @@ paths:
       description: |
         logo: PNG/JPEG/WebP, max 1 MB, max 1024x1024. favicon: PNG/ICO, max 256 KB.
         SVG is rejected. Stored as `{asset}-{sha1}.{ext}`; the public URL changes on upload.
-      x-roles: [hr_admin]
+      x-roles: [admin]
       requestBody:
         required: true
         content:
@@ -1051,7 +1056,7 @@ paths:
       tags: [Settings]
       operationId: deleteBrandingAsset
       summary: Remove logo or favicon (falls back to the bundled default)
-      x-roles: [hr_admin]
+      x-roles: [admin]
       responses:
         '200': {$ref: '#/components/responses/BrandingOk'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
@@ -1059,12 +1064,47 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /settings/working-week:
+    get:
+      tags: [Settings]
+      operationId: getWorkingWeek
+      summary: Effective weekend days (DB override ?? LMS_WEEKEND_DAYS)
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200': {$ref: '#/components/responses/WorkingWeekOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Settings]
+      operationId: updateWorkingWeek
+      summary: Override or reset the weekend days
+      description: |
+        `weekend_days` = ISO weekdays (1 = Monday ... 7 = Sunday), unique, at least one working
+        day left (max 6 items). `null` deletes the override (back to `LMS_WEEKEND_DAYS`).
+        Applies to day counts of requests submitted afterwards; `days` of already-submitted
+        requests is never recalculated (D-30).
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkingWeekUpdate'}
+            example: {weekend_days: [5, 6]}
+      responses:
+        '200': {$ref: '#/components/responses/WorkingWeekOk'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /modules:
     get:
       tags: [Settings]
       operationId: listModules
       summary: Module registry with licensed / enabled state
-      x-roles: [hr_admin]
+      x-roles: [admin]
       responses:
         '200':
           description: All registry modules.
@@ -1100,7 +1140,7 @@ paths:
         Only modules in `MODULES_ENABLED` (env, licensed) and `available` can be enabled;
         others yield 422 `MODULE_NOT_LICENSED`. Disabling `api` through the API is refused
         (422) to avoid locking the caller out; use the web admin.
-      x-roles: [hr_admin]
+      x-roles: [admin]
       requestBody:
         required: true
         content:
@@ -1437,7 +1477,7 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
     Conflict:
-      description: State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LAST_HR_ADMIN`).
+      description: State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LAST_ADMIN`).
       headers:
         Retry-After: {$ref: '#/components/headers/Retry-After'}
       content:
@@ -1509,6 +1549,17 @@ components:
             instance: /api/v1/admin/users
             code: IDP_UNAVAILABLE
             request_id: 6f1c0e9a8b7d4c3e
+    WorkingWeekOk:
+      description: Effective working week.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data, meta, links]
+            properties:
+              data: {$ref: '#/components/schemas/WorkingWeek'}
+              meta: {type: object}
+              links: {type: object}
     IdentityUserOk:
       description: Identity user.
       content:
@@ -1676,7 +1727,11 @@ components:
     Role:
       type: string
       enum: [employee, manager, hr_admin]
-      description: Keycloak realm role (read-only in this API).
+      description: Base LMS realm role, exactly one per user (read-only outside `/admin/users/{id}/roles`).
+    AssignableRole:
+      type: string
+      enum: [employee, manager, hr_admin, admin]
+      description: Realm roles the LMS may assign/revoke (allow-list, D-29). `admin` is additive.
     LeaveStatus:
       type: string
       enum: [pending, approved, rejected, cancelled]
@@ -1771,7 +1826,7 @@ components:
         - MANAGER_CYCLE
         - ROLE_READ_ONLY
         - SELF_MODIFICATION_FORBIDDEN
-        - LAST_HR_ADMIN
+        - LAST_ADMIN
         - IDP_CONFLICT
         - IDP_READ_ONLY
         - IDP_UNAVAILABLE
@@ -1802,12 +1857,13 @@ components:
 
     User:
       type: object
-      required: [id, name, email, role, department, manager, employee_code, designation, employment_type, date_of_joining, is_active, last_login_at, created_at]
+      required: [id, name, email, role, is_admin, department, manager, employee_code, designation, employment_type, date_of_joining, is_active, last_login_at, created_at]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         name: {type: string, readOnly: true, description: From Keycloak.}
         email: {type: string, format: email, readOnly: true, description: From Keycloak.}
         role: {allOf: [{$ref: '#/components/schemas/Role'}], readOnly: true}
+        is_admin: {type: boolean, readOnly: true, description: 'Holds the additive realm role `admin` (D-29).'}
         department:
           oneOf:
             - $ref: '#/components/schemas/DepartmentSummary'
@@ -2105,7 +2161,7 @@ components:
     IdentityUser:
       type: object
       description: Keycloak identity merged with LMS fields.
-      required: [id, keycloak_id, username, email, first_name, last_name, enabled, email_verified, role, federated, federation_link, department, manager, date_of_joining, employee_code, designation, employment_type, is_active]
+      required: [id, keycloak_id, username, email, first_name, last_name, enabled, email_verified, role, is_admin, federated, federation_link, department, manager, date_of_joining, employee_code, designation, employment_type, is_active]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         keycloak_id: {type: string, format: uuid}
@@ -2118,6 +2174,7 @@ components:
         role:
           description: The LMS realm role, null if the user has none.
           oneOf: [{$ref: '#/components/schemas/Role'}, {type: 'null'}]
+        is_admin: {type: boolean, description: 'Holds the realm role `admin`.'}
         federated: {type: boolean, description: 'true when the user comes from LDAP/AD (profile read-only).'}
         federation_link: {type: [string, 'null']}
         department:
@@ -2147,6 +2204,7 @@ components:
         last_name: {type: string, minLength: 1, maxLength: 100}
         enabled: {type: boolean, default: true}
         role: {allOf: [{$ref: '#/components/schemas/Role'}], default: employee}
+        is_admin: {type: boolean, default: false, description: 'Also grant the realm role `admin`.'}
         department_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
         manager_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
         date_of_joining: {type: [string, 'null'], format: date}
@@ -2176,9 +2234,35 @@ components:
         roles:
           type: array
           minItems: 1
-          maxItems: 1
-          description: Exactly one LMS realm role (allow-list).
-          items: {$ref: '#/components/schemas/Role'}
+          maxItems: 2
+          uniqueItems: true
+          description: Exactly one base role (`employee`, `manager`, `hr_admin`) plus optionally `admin`. Omitting `admin` revokes it.
+          items: {$ref: '#/components/schemas/AssignableRole'}
+
+    WorkingWeek:
+      type: object
+      required: [weekend_days, overridden]
+      properties:
+        weekend_days:
+          type: array
+          description: Effective ISO weekdays that are not working days (1 = Monday ... 7 = Sunday).
+          items: {type: integer, minimum: 1, maximum: 7}
+          uniqueItems: true
+          maxItems: 6
+        overridden: {type: boolean, description: 'true when the `work.weekend_days` setting overrides `LMS_WEEKEND_DAYS`.'}
+    WorkingWeekUpdate:
+      type: object
+      additionalProperties: false
+      required: [weekend_days]
+      properties:
+        weekend_days:
+          description: Unique ISO weekdays 1-7, at least one working day left; `null` resets to the env default.
+          oneOf:
+            - type: array
+              items: {type: integer, minimum: 1, maximum: 7}
+              uniqueItems: true
+              maxItems: 6
+            - type: 'null'
 
     Readiness:
       type: object
@@ -2201,6 +2285,7 @@ components:
           name: Alice Rao
           email: alice@acme.example
           role: employee
+          is_admin: false
           department: {id: 01JB8YZZ9A1B2C3D4E5F6G7H8J, code: IT, name: Information Technology}
           manager: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1X, name: Bob Mehta}
           employee_code: E-0042
@@ -2326,7 +2411,7 @@ components:
         meta: {}
         links: {}
     IdentityUserCreateDave:
-      summary: New employee created by HR
+      summary: New employee created by an admin
       value:
         username: dave.k
         email: dave.k@acme.example

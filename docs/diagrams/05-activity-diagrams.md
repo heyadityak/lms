@@ -26,7 +26,7 @@ flowchart TB
         v2{"V2 start ≥ today − max_backdate_days?"}
         v3{"V3 end ≥ start and same<br/>leave year (LEAVE_YEAR_START_MONTH)?"}
         v4{"V4 half day only if one date<br/>and type allows it?"}
-        cnt["WorkingDayCalculator: drop weekends (LMS_WEEKEND_DAYS),<br/>drop holidays only if module holidays on,<br/>half day = 0.5"]
+        cnt["WorkingDayCalculator: drop weekends<br/>(work.weekend_days ?? LMS_WEEKEND_DAYS),<br/>drop holidays only if module holidays on,<br/>half day = 0.5"]
         v5{"V5 days > 0?"}
         v6{"V6 no pending / approved<br/>request overlaps?"}
         v7{"V7 tracks_balance?<br/>days ≤ balance − pending"}
@@ -203,14 +203,23 @@ flowchart TB
 
 Idempotent twice over: the Redis lock prevents concurrent runs, and the partial unique index makes a re-run write nothing new (`insertOrIgnore`).
 
-## 5. White-label settings update (UC-B1–B6)
+## 5. White-label and working-week settings update (UC-B1–B6, UC-H16)
 
 ```mermaid
 flowchart TB
-    subgraph HR["hr_admin"]
+    subgraph ADM["admin (D-29)"]
         s([Open Settings]) --> what{"Branding or modules?"}
         ok([Saved, page re-themed])
         e([422 with field errors])
+    end
+
+    subgraph HRL["hr_admin"]
+        ws([Open Working week]) --> wsub["Submit weekend_days<br/>or null = reset"]
+    end
+
+    subgraph WW["UpdateWorkingWeek (D-30)"]
+        w1{"each 1–7, distinct,<br/>at least one working day?"}
+        w2["Upsert settings work.weekend_days<br/>(null = delete row, back to LMS_WEEKEND_DAYS)<br/>existing leave_requests.days untouched"]
     end
 
     subgraph BR["UpdateBranding / ResetBranding"]
@@ -239,17 +248,20 @@ flowchart TB
     what -- modules --> m1 --> m2
     m2 -- "no: MODULE_NOT_LICENSED" --> e
     m2 -- yes --> m3 --> c1
+    wsub --> w1
+    w1 -- "no: VALIDATION_FAILED" --> e
+    w1 -- yes --> w2 --> c1
     c1 --> c2 --> ok
 ```
 
-An admin can only **switch off** what the env licenses; an unlicensed module can never be switched on from the UI or API (D-14). Disabled modules return 404 and disappear from menus (D-17).
+An `admin` can only **switch off** what the env licenses; an unlicensed module can never be switched on from the UI or API (D-14). Disabled modules return 404 and disappear from menus (D-17). A weekend change only affects requests submitted afterwards; stored `days` are never recalculated (D-30).
 
 ## 6. First-login provisioning (UC-E1, USE_CASES §3.10)
 
 ```mermaid
 flowchart TB
     subgraph B["Browser"]
-        s([Click Sign in]) --> kcl["Keycloak login page<br/>(customer theme, maybe LDAP / SSO broker)"]
+        s([Click Sign in]) --> kcl["Keycloak login page<br/>(customer-configured upstream Keycloak,<br/>maybe LDAP / SSO broker)"]
         home([Dashboard])
         deny([Access denied page])
     end
@@ -257,7 +269,7 @@ flowchart TB
     subgraph L["KeycloakLoginController::callback"]
         st{"state matches session?"}
         ex["Exchange code (PKCE) at KEYCLOAK_BASE_URL<br/>verify id_token / access token via JwksCache"]
-        rl{"realm_access.roles has<br/>employee, manager or hr_admin?"}
+        rl{"realm_access.roles has a base role<br/>employee, manager or hr_admin?"}
     end
 
     subgraph P["KeycloakUserProvisioner"]
@@ -265,7 +277,7 @@ flowchart TB
         f2{"row with same email,<br/>keycloak_sub null, email_verified?"}
         link["Link: set keycloak_sub"]
         new["Create user: name, email, role,<br/>department / manager null, is_active true"]
-        sync["Sync name, email, role (highest wins),<br/>last_login_at"]
+        sync["Sync name, email, role (highest base role wins),<br/>is_admin (has admin), last_login_at"]
         doj{"date_of_joining known now for<br/>the first time (claim or row)?"}
         grant["GrantInitialEntitlement (prorated)"]
     end
@@ -297,30 +309,30 @@ The same provisioner runs inside `KeycloakJwtGuard` for API calls, so an API-fir
 
 ```mermaid
 flowchart TB
-    subgraph HR["hr_admin (UI or PUT /api/v1/admin/users/ID/roles)"]
-        s([Choose new role for a user]) --> sub["Submit roles: one of employee / manager / hr_admin"]
+    subgraph HR["admin (UI or PUT /api/v1/admin/users/ID/roles)"]
+        s([Choose new roles for a user]) --> sub["Submit roles: one of employee / manager / hr_admin,<br/>plus optional admin"]
         ok([Role changed, audit written])
         e([Problem response])
     end
 
     subgraph G["Middleware, policy, UserAdminGuard"]
         g0{"module user_management on?"}
-        g1{"G1 actor is hr_admin?"}
-        g4{"G4 exactly one role<br/>from the allow-list?"}
-        g2{"G2 target is the actor and the<br/>change removes hr_admin?"}
-        lock["Take Redis lock lock:hr-admin-guard"]
-        g3{"G3 target is hr_admin, change removes it,<br/>and they are the last active hr_admin?"}
+        g1{"G1 actor is admin?"}
+        g4{"G4 one base role + optional admin,<br/>all from the allow-list?"}
+        g2{"G2 target is the actor?"}
+        lock["Take Redis lock lock:admin-guard"]
+        g3{"G3 target is admin, change removes it,<br/>and they are the last active admin?"}
     end
 
     subgraph KC["AssignRolesAction via KeycloakAdminClient"]
         tok["Get lms-admin token (Redis cache)"]
-        add["Add new LMS realm role"]
-        rem["Remove the other LMS realm roles<br/>(non-LMS roles untouched)"]
+        add["Add the new base role (+ admin if requested)"]
+        rem["Remove the other base roles<br/>(and admin if not requested;<br/>non-LMS roles untouched)"]
         kerr{"Keycloak response?"}
     end
 
     subgraph DB["Local mirror"]
-        mir["users.role = new role"]
+        mir["users.role = base role,<br/>users.is_admin"]
         aud["Insert user_admin_audits outcome success"]
         audf["Insert user_admin_audits outcome failed + error_code"]
         unl["Release lock"]
@@ -335,7 +347,7 @@ flowchart TB
     g4 -- yes --> g2
     g2 -- "yes: SELF_MODIFICATION_FORBIDDEN 403" --> audf2["Insert user_admin_audits outcome failed"] --> e
     g2 -- no --> lock --> g3
-    g3 -- "yes: LAST_HR_ADMIN 409" --> audf
+    g3 -- "yes: LAST_ADMIN 409" --> audf
     g3 -- no --> tok --> add --> rem --> kerr
     kerr -- "2xx" --> mir --> aud
     kerr -- "federated provider refuses: IDP_READ_ONLY 422" --> audf
@@ -346,4 +358,4 @@ flowchart TB
     unl -- failure --> e
 ```
 
-The last-hr_admin count uses the local mirror under a Redis lock so two concurrent demotions cannot both pass. Drift with Keycloak (roles changed directly in the Keycloak console) is repaired at the user's next login by the provisioner.
+The last-admin count (active users with `is_admin`) uses the local mirror under a Redis lock so two concurrent demotions cannot both pass. Disable (UC-U4) applies the same G2/G3 checks. Drift with Keycloak (roles changed directly in the Keycloak console) is repaired at the user's next login by the provisioner.

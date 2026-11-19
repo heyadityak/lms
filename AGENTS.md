@@ -5,7 +5,7 @@ Every agent (human or AI) working in this repo follows this file. Read [docs/USE
 ## 1. Project overview
 A greenfield rewrite of a 2016 PHP college project (Leave Management System) as a **white-label, single-tenant** product: one deployment per customer (SMB/enterprise), each with its own branding (name, colours, logo, favicon) and module set (holidays, reports, api, notifications, …).
 
-Core features: employees apply for leave, managers approve/reject, HR admins manage users/leave types/holidays/branding/modules. Balances are kept in an append-only ledger, with year-start accrual and carry-forward.
+Core features: employees apply for leave, managers approve/reject, HR admins (`hr_admin`) run HR operations (departments, leave types, holidays, working week, balance adjustments, reports, users' HR fields), admins (`admin`, additive realm role, D-29) manage branding, modules and Keycloak users. Balances are kept in an append-only ledger, with year-start accrual and carry-forward.
 
 ## 2. Stack (fixed)
 
@@ -15,7 +15,7 @@ Core features: employees apply for leave, managers approve/reject, HR admins man
 | Laravel | 12.x (`laravel/laravel:^12.0`) |
 | PostgreSQL | 17 (`postgres:17-alpine`) |
 | NGINX | `nginx:stable-alpine`: edge reverse proxy + load balancer in front of N app replicas (`proxy_pass` HTTP), static assets, security headers, TLS in prod |
-| Identity / Auth | **Keycloak 26** (OIDC, realm `lms`, realm roles = RBAC authority, D-20). Web: `laravel/socialite` + `socialiteproviders/keycloak` → Laravel session. API: Bearer JWT guard `keycloak-jwt` (`firebase/php-jwt`, JWKS cached in Redis). **No Sanctum, no passwords in the app.** |
+| Identity / Auth | **Keycloak 26**, upstream image, no custom image published (D-33) (OIDC, realm `lms`, realm roles `employee|manager|hr_admin` + additive `admin` = RBAC authority, D-20, D-29). Web: `laravel/socialite` + `socialiteproviders/keycloak` → Laravel session. API: Bearer JWT guard `keycloak-jwt` (`firebase/php-jwt`, JWKS cached in Redis). **No Sanctum, no passwords in the app.** |
 | API contract | [`docs/api/openapi.yaml`](docs/api/openapi.yaml) (OpenAPI 3.1) is the **source of truth**; conventions in [`docs/API_GUIDELINES.md`](docs/API_GUIDELINES.md) (D-21). |
 | Queue / cache / session / locks / rate limits | **Redis 7** (`redis:7-alpine`, `phpredis` ext), separate DBs: default 0, cache 1, session 2, queue 3, prefix `lms-` (D-23). `failed_jobs` in Postgres. |
 | Object storage | S3 API: **RustFS** in dev (`rustfs/rustfs`, bucket created by the `s3-init` container), any S3-compatible store in prod (D-24). |
@@ -37,7 +37,7 @@ Core features: employees apply for leave, managers approve/reject, HR admins man
 ├── docker/
 │   ├── nginx/default.conf.template
 │   ├── php/php.ini  php/entrypoint.sh                  # entrypoint: caches, then Octane or classic FrankenPHP
-│   ├── keycloak/Dockerfile  keycloak/realm-lms.json   # prod image; DEV realm import (clients, roles, alice/bob/carol)
+│   ├── keycloak/realm-lms.json                        # DEV realm import (clients, roles, alice/bob/carol/dave); prod = upstream Keycloak (D-33)
 │   └── postgres/init/01-test-db.sql                     # creates lms_test + keycloak DBs
 ├── .github/workflows/ci.yml
 ├── app/
@@ -91,7 +91,7 @@ Core features: employees apply for leave, managers approve/reject, HR admins man
 - No raw SQL with interpolated input. Postgres-specific DDL via `DB::statement` in migrations is fine.
 - Mail: Notifications only (`ShouldQueue`), Blade markdown mail, subject prefixed with the brand name.
 - Naming: routes kebab-case plural, route names dotted (`leave-requests.approve`), tables snake plural, factories for every model.
-- **Auth (D-20):** never store or check passwords. Web login only through `KeycloakLoginController` (Socialite). API routes use `auth:keycloak-jwt`. Roles come from Keycloak realm roles via `KeycloakUserProvisioner`. The only in-app way to change identity data or roles is the `user_management` module (D-22): `CreateUserAction`, `UpdateUserAction`, `AssignRolesAction`, `SetUserEnabledAction`, `SendPasswordResetAction`, which write **Keycloak first** via the `KeycloakAdminClient` interface, then mirror locally, and audit to `user_admin_audits`. Never call the Keycloak Admin API outside that interface; never set passwords. Resource rules (direct manager, not own request) stay in Policies.
+- **Auth (D-20):** never store or check passwords. Web login only through `KeycloakLoginController` (Socialite). API routes use `auth:keycloak-jwt`. Roles come from Keycloak realm roles via `KeycloakUserProvisioner`. The only in-app way to change identity data or roles is the `user_management` module (D-22), usable by role `admin` only (D-29): `CreateUserAction`, `UpdateUserAction`, `AssignRolesAction`, `SetUserEnabledAction`, `SendPasswordResetAction`, which write **Keycloak first** via the `KeycloakAdminClient` interface, then mirror locally, and audit to `user_admin_audits`. Never call the Keycloak Admin API outside that interface; never set passwords. Resource rules (direct manager, not own request) stay in Policies.
 - **API contract (D-21):** `docs/api/openapi.yaml` is the source of truth. Domain implements `/api/v1` routes, Resources, status codes and problem `code`s to match it exactly; change the spec first (architect/coordinator) if behaviour must differ. Expose `public_id` (ULID) as `id`, never the bigint key. Errors are `application/problem+json` (RFC 9457) via the exception handler. Swagger UI/Redoc is served at `/api/docs` when the `api` module is enabled (route added by platform).
 
 ## 5. Running things — Docker only
@@ -103,11 +103,11 @@ docker compose build
 docker compose run --rm app composer install
 docker compose run --rm app php artisan key:generate
 docker compose up -d postgres redis rustfs s3-init keycloak mailpit
-docker compose run --rm app php artisan migrate --seed          # DemoSeeder only in local (alice/bob/carol)
+docker compose run --rm app php artisan migrate --seed          # DemoSeeder only in local (alice/bob/carol/dave)
 docker compose up -d                                             # nginx :8080 → app (FrankenPHP/Octane :8000), keycloak :8081, rustfs console :9001, mailpit UI :8025
 docker compose exec app php artisan octane:reload                # reload Octane workers after code changes (or run app with --watch)
 APP_SERVER_MODE=classic docker compose up -d app                 # non-worker FrankenPHP for debugging state issues
-# Dev logins (Keycloak realm import, DEV ONLY): alice (employee), bob (manager), carol (hr_admin)
+# Dev logins (Keycloak realm import, DEV ONLY): alice (employee), bob (manager), carol (hr_admin), dave (employee + admin)
 
 docker compose run --rm app php artisan test                     # all suites
 docker compose run --rm app php artisan test --testsuite=Unit
@@ -133,7 +133,7 @@ Minimum feature scenarios, owned by QA:
 1. Submit happy path → pending, approver notified, available balance drops by pending amount.
 2. Overlap rejected (app check, and constraint when bypassing the app).
 3. Insufficient balance rejected. LWP bypasses the balance check.
-4. Weekend/holiday-only range rejected. Half-day on a multi-day range rejected.
+4. Weekend/holiday-only range rejected. Half-day on a multi-day range rejected. Weekend override (`PATCH /settings/working-week`, hr_admin): new requests use it, existing `days` unchanged; invalid sets (out of 1–7, duplicates, all 7 days) → 422; `null` resets to `LMS_WEEKEND_DAYS` (D-30).
 5. Manager approves report → debit ledger row. Manager cannot approve a non-report (403). Nobody approves own (403).
 6. Reject without comment → 422.
 7. Cancel approved future leave → reversal. Employee cannot cancel started leave (403). HR can.
@@ -141,12 +141,12 @@ Minimum feature scenarios, owned by QA:
 9. Year-start accrual: CL lapses, SL carries all, EL capped at max_balance. Re-run creates no new rows.
 10. Proration when `date_of_joining` is first set (HR edit or token claim at first login).
 11. Each module off → its routes 404, menu link absent, `holidays` off → holidays not excluded from day count, `notifications` off → no leave notifications sent. Admin cannot enable an unlicensed module (422).
-12. Branding: colour validation, logo upload stored on the fake disk and served by `/branding/logo`, SVG rejected, reset to defaults.
+12. Branding (role `admin`; hr_admin → 403): colour validation, logo upload stored on the fake disk and served by `/branding/logo`, SVG rejected, reset to defaults.
 13. Deactivated user: callback refuses login, API JWT → 401, existing session logged out, pending requests cancelled.
 14. `/healthz` 200. `/readyz` 200 with `db` + `redis` checks (and 503 when the DB or Redis connection is broken).
 15. API: 401 for missing/expired/wrong-`aud`/wrong-`iss`/bad-signature JWT, 404 problem when `api` off, `Idempotency-Key` replay, `X-RateLimit-*` headers, and **every API response validated against `docs/api/openapi.yaml`** (`osteel/openapi-httpfoundation-testing`). Tests never call Keycloak: they sign JWTs with a test RSA key and bind a fake `JwksCache`; web tests use `actingAs()` or fake Socialite.
-16. First SSO login provisions the user (`keycloak_sub`), role synced from realm roles on every login (highest wins; none → refused); `PATCH /users/{id}` with `role` → 422 `ROLE_READ_ONLY`.
-17. User admin (bind `FakeKeycloakAdminClient`, never a real Keycloak): create → Keycloak user + local row + actions email; local insert failure → Keycloak user deleted (compensation) and audit row; duplicate → 409 `IDP_CONFLICT`; Keycloak down → 503 `IDP_UNAVAILABLE` and no local row; self-demote/self-disable → 403; last `hr_admin` → 409 `LAST_HR_ADMIN`; federated profile edit → 422 `IDP_READ_ONLY`; role outside allow-list → 422; `user_management` off → 404; every action writes `user_admin_audits`.
+16. First SSO login provisions the user (`keycloak_sub`), base role and `is_admin` synced from realm roles on every login (highest base role wins; none → refused, `admin` alone → refused); `PATCH /users/{id}` with `role` → 422 `ROLE_READ_ONLY`.
+17. User admin, role `admin` only (hr_admin → 403) (bind `FakeKeycloakAdminClient`, never a real Keycloak): create → Keycloak user + local row + actions email; local insert failure → Keycloak user deleted (compensation) and audit row; duplicate → 409 `IDP_CONFLICT`; Keycloak down → 503 `IDP_UNAVAILABLE` and no local row, also on list/detail (no local fallback) while `/users` keeps working; self role change/self-disable → 403; last active `admin` demoted/disabled → 409 `LAST_ADMIN`; federated profile edit → 422 `IDP_READ_ONLY`; role outside allow-list → 422; `user_management` off → 404; every action writes `user_admin_audits`.
 18. Octane state leaks: on one worker (`Octane` test helper / `APP_SERVER_MODE=octane` in a dedicated feature test), run request A as alice under brand override X, then request B as bob with no override; assert B sees bob's identity, default branding, its own locale/settings and no leftover auth, scoped bindings or config from A.
 
 ## 7. CI

@@ -2,7 +2,7 @@
 
 How the white-label LMS fits together at runtime and how it is shipped. Sources: [SYSTEM_DESIGN.md](../SYSTEM_DESIGN.md) §1–3, §8–11, §13 and ADRs D-01, D-09, D-14, D-15, D-20…D-27 in [decisions.md](../../.logs/decisions.md).
 
-> Runtime choices shown here: FrankenPHP + Octane app replicas behind NGINX (D-27), Redis 7 for sessions/cache/locks/rate limits/queue (D-23), RustFS (S3-compatible) object storage and first-class horizontal scaling (D-24), Keycloak identity (D-20, D-22), CI/GHCR (D-25).
+> Runtime choices shown here: FrankenPHP + Octane app replicas behind NGINX (D-27), Redis 7 for sessions/cache/locks/rate limits/queue (D-23), RustFS (S3-compatible) object storage and first-class horizontal scaling (D-24), Keycloak identity on the upstream image (D-20, D-22, D-29, D-33), CI/GHCR (D-25).
 
 C4 notation is drawn with flowcharts, because Mermaid's `C4Context` is experimental and lays out poorly on GitHub. Shapes: person = stadium, container = rectangle, data store = cylinder, external system = dashed border.
 
@@ -12,7 +12,8 @@ C4 notation is drawn with flowcharts, because Mermaid's `C4Context` is experimen
 flowchart TB
     emp([Employee<br/>role=employee])
     mgr([Manager<br/>role=manager])
-    hr([HR Admin<br/>role=hr_admin<br/>also branding, modules, user admin])
+    hr([HR Admin<br/>role=hr_admin<br/>HR operations])
+    adm([Admin<br/>role admin, additive<br/>branding, modules, user admin])
     api([API client<br/>mobile app / script])
     op([Vendor / operator<br/>env: licensed modules,<br/>brand defaults, secrets])
 
@@ -26,9 +27,10 @@ flowchart TB
 
     emp -->|apply, cancel, view balances| lms
     mgr -->|approve / reject reports' requests| lms
-    hr -->|users, types, holidays, reports,<br/>branding, modules| lms
+    hr -->|users' HR fields, types, holidays,<br/>working week, reports| lms
+    adm -->|branding, modules,<br/>Keycloak users + roles| lms
     api -->|/api/v1 JSON, Bearer JWT| lms
-    emp & mgr & hr -->|sign in OIDC| kc
+    emp & mgr & hr & adm -->|sign in OIDC| kc
     api -->|auth code + PKCE<br/>client lms-api-cli| kc
     lms -->|OIDC code exchange, JWKS,<br/>Admin REST API as lms-admin| kc
     kc -->|federation / brokering| dir
@@ -102,7 +104,7 @@ flowchart LR
         secA["secrets: APP_KEY, DB_PASSWORD, REDIS_PASSWORD,<br/>MAIL_PASSWORD, AWS_SECRET_ACCESS_KEY,<br/>KEYCLOAK_CLIENT_SECRET, KEYCLOAK_ADMIN_CLIENT_SECRET,<br/>KC_DB_PASSWORD"]
         relA["release: migrate --force (one-off)<br/>then roll app / worker / scheduler"]
         runA["nginx + app×N (FrankenPHP) + worker×N + scheduler×1"]
-        kcA["Keycloak cluster A<br/>login theme: Acme"]
+        kcA["Keycloak cluster A<br/>upstream image, realm lms imported"]
         dbA[("Postgres A<br/>lms + keycloak")]
         rA[("Redis A")]
         bA[("RustFS (S3-compatible)<br/>bucket A")]

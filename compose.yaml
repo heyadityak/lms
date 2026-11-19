@@ -1,5 +1,5 @@
-# Dev stack (SYSTEM_DESIGN §3). Scale: docker compose up -d --scale app=3 --scale worker=2
-# One-off migrations (never in the entrypoint, D-24): docker compose run --rm migrate
+# Dev stack (SYSTEM_DESIGN §3). Scale: docker compose up -d --scale app=3 --scale web=2 --scale worker=2
+# One-off migrations (never in the entrypoint, D-24): docker compose run --rm migrate && docker compose run --rm web-migrate
 x-app: &app
   build:
     context: .
@@ -26,6 +26,28 @@ x-app: &app
       condition: service_completed_successfully
   restart: unless-stopped
 
+# Next.js frontend + BFF (D-43, D-45): the production image, runtime env only (no NEXT_PUBLIC_*).
+# Values come from .env via compose interpolation (Next standalone does not read the repo .env).
+x-web: &web
+  build:
+    context: web
+  image: lms-web
+  environment:
+    APP_URL: ${APP_URL:-http://localhost:8080}
+    BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env (see .env.example)}
+    AUTH_DATABASE_URL: ${AUTH_DATABASE_URL:-postgres://lms:secret@postgres:5432/lms_auth}
+    KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-http://keycloak:8080}
+    KEYCLOAK_REALM: ${KEYCLOAK_REALM:-lms}
+    KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-lms-web}
+    KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?set KEYCLOAK_CLIENT_SECRET in .env (see .env.example)}
+    LMS_API_URL: ${LMS_API_URL:-http://nginx}
+    BRANDING_REVALIDATE_SECONDS: ${BRANDING_REVALIDATE_SECONDS:-30}
+    AUTH_SESSION_MAX_AGE: ${AUTH_SESSION_MAX_AGE:-36000}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   nginx:
     build:
@@ -34,14 +56,14 @@ services:
     image: lms-nginx-dev
     environment:
       APP_UPSTREAM: ${APP_UPSTREAM:-app:8000}
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-web:3000}
       NGINX_RESOLVER: ${NGINX_RESOLVER:-127.0.0.11}
-    volumes:
-      # Dev: live static assets (the image bakes in a copy for prod).
-      - ./public:/usr/share/nginx/html:ro
     ports:
       - "${NGINX_PORT:-8080}:80"
     depends_on:
       app:
+        condition: service_healthy
+      web:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
@@ -72,6 +94,48 @@ services:
     restart: "no"
     healthcheck:
       disable: true
+    profiles: [tools]
+
+  # Healthcheck = the image's HEALTHCHECK (GET :3000/bff/healthz, no I/O).
+  web:
+    <<: *web
+
+  # One-off Better Auth schema migration for lms_auth (D-45), idempotent: docker compose run --rm web-migrate
+  web-migrate:
+    <<: *web
+    command: ["node", "scripts/auth-migrate.mjs"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    profiles: [tools]
+
+  # Node tooling (lint, typecheck, vitest, gen:api, next dev) without host Node. Mounts the repo root because
+  # gen:api/check:api read ../docs/api/openapi.yaml. node_modules lives in a volume (Linux binaries, not the host's).
+  # First run: docker compose run --rm web-dev npm ci
+  web-dev:
+    build:
+      context: web
+      dockerfile_inline: |
+        FROM node:24.22.3-alpine
+        ARG UID=1000
+        ARG GID=1000
+        # Pre-create the volume mount points so the named volumes inherit the host user's ownership.
+        RUN mkdir -p /repo/web/node_modules /home/dev/.npm && chown -R $${UID}:$${GID} /repo /home/dev
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    image: lms-web-dev
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /repo/web
+    environment:
+      HOME: /home/dev
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - ./:/repo
+      - web_node_modules:/repo/web/node_modules
+      - web_npm_cache:/home/dev/.npm
+    ports:
+      - "${WEB_DEV_PORT:-3000}:3000"
     profiles: [tools]
 
   postgres:
@@ -185,6 +249,8 @@ services:
     restart: unless-stopped
 
 volumes:
+  web_node_modules:
+  web_npm_cache:
   pgdata:
   redisdata:
   s3data:

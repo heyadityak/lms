@@ -106,7 +106,7 @@ Core features: employees apply for leave, managers approve/reject, HR admins (`h
 - **API contract (D-21):** `docs/api/openapi.yaml` is the source of truth. Domain implements `/api/v1` routes, Resources, status codes and problem `code`s to match it exactly; change the spec first (architect/coordinator) if behaviour must differ. Expose `public_id` (ULID) as `id`, never the bigint key. Errors are `application/problem+json` (RFC 9457) via the exception handler. Swagger UI/Redoc is served at `/api/docs` when the `api` module is enabled (route added by platform).
 
 ## 5. Running things — Docker only
-The host has **no PHP/Composer**. Everything runs through compose. Install Task: https://taskfile.dev/installation/ (e.g. `brew install go-task`); `task --list` shows the wrappers (`up`, `down`, `build`, `test`, `test:unit`, `test:feature`, `lint`, `migrate`, `shell`, `logs`).
+The host has **no PHP/Composer**. Everything runs through compose. Install Task: https://taskfile.dev/installation/ (e.g. `brew install go-task`); `task --list` shows the wrappers (`up`, `down`, `build`, `test`, `test:unit`, `test:feature`, `lint`, `migrate`, `reload`, `shell`, `logs`, `web:install`, `web:test`, `web:build`, `web:gen-api`).
 
 ```bash
 cp .env.example .env
@@ -115,9 +115,9 @@ docker compose run --rm app composer install
 docker compose run --rm app php artisan key:generate
 docker compose up -d postgres redis rustfs s3-init keycloak mailpit
 docker compose run --rm app php artisan migrate --seed          # DemoSeeder only in local (alice/bob/carol/dave)
-docker compose run --rm web node scripts/auth-migrate.mjs        # Better Auth schema in lms_auth (D-45)
+docker compose run --rm web-migrate                              # Better Auth schema in lms_auth (D-45); `task migrate` runs both
 docker compose up -d                                             # nginx :8080 → web (Next :3000) + app (FrankenPHP/Octane :8000), keycloak :8081, rustfs console :9001, mailpit UI :8025
-docker compose exec app php artisan octane:reload                # reload Octane workers after code changes (or run app with --watch)
+task reload                                                      # dev: restart Octane workers on every app replica + queue:restart after PHP code changes
 APP_SERVER_MODE=classic docker compose up -d app                 # non-worker FrankenPHP for debugging state issues
 # Dev logins (Keycloak realm import, DEV ONLY): alice (employee), bob (manager), carol (hr_admin), dave (employee + admin)
 
@@ -125,7 +125,7 @@ docker compose run --rm app php artisan test                     # all suites
 docker compose run --rm app php artisan test --testsuite=Unit
 docker compose run --rm app php artisan test --testsuite=Feature # uses DB lms_test on compose postgres
 docker compose run --rm app vendor/bin/pint
-docker compose run --rm web-dev npm run lint                     # also typecheck, test, gen:api; Node tooling in Docker (service name set by platform)
+docker compose run --rm web-dev npm ci                           # once (node_modules volume); then `task web:test` = lint, typecheck, vitest, check:api
 docker compose run --rm app php artisan lms:accrue-year 2027
 docker compose logs -f app worker
 ```

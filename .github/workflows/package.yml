@@ -1,6 +1,6 @@
 name: package
 
-# CI (reusable call) -> compose smoke -> build + push ghcr.io/<owner>/<repo>/{app,nginx} (D-25, D-38).
+# CI (reusable call) -> compose smoke -> build + push ghcr.io/<owner>/<repo>/{app,nginx,web} (D-25, D-38, D-43).
 # workflow_call instead of workflow_run: the run keeps the real push ref, so tags get semver images natively
 # and the gate needs no head_sha/conclusion plumbing.
 on:
@@ -35,14 +35,31 @@ jobs:
       - run: docker compose build
       - run: docker compose run --rm --no-deps app composer install --no-interaction --no-progress --prefer-dist
       - run: docker compose run --rm --no-deps app php artisan key:generate
-      - run: docker compose up -d --wait --wait-timeout 300 --scale app=2
+      - run: docker compose up -d --wait --wait-timeout 300 --scale app=2 --scale web=2
       - run: docker compose run --rm migrate
+      - run: docker compose run --rm app php artisan db:seed --class=DemoSeeder --force
+      - run: docker compose run --rm web-migrate
       - name: Health checks
         run: |
           curl -fsS http://localhost:8080/healthz
           curl -fsS http://localhost:8080/readyz
           curl -fsS -o /dev/null -w 'keycloak discovery %{http_code}\n' \
             http://localhost:8081/realms/lms/.well-known/openid-configuration
+      - name: Edge routing
+        run: |
+          expect() { # expect <status> <path> [redirect]
+            got=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "http://localhost:8080$2")
+            echo "$2 -> $got"
+            [ "$got" = "$1 ${3:-}" ] || { echo "::error::$2 expected $1 ${3:-}, got $got"; exit 1; }
+          }
+          expect 307 / http://localhost:8080/signin
+          expect 200 /signin
+          expect 200 /bff/healthz
+          expect 200 /api/v1/branding
+          expect 401 /api/v1/me
+      # TODO(phase 17): Playwright e2e (pinned mcr.microsoft.com/playwright image, --network host).
+      - name: Keycloak login through nginx (alice)
+        run: scripts/smoke-login.sh alice
       - name: Dump logs
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color
@@ -63,6 +80,9 @@ jobs:
             target: app-prod
           - image: nginx
             target: nginx
+          - image: web
+            context: web
+            target: runtime
     steps:
       - uses: actions/checkout@v7
       - id: repo
@@ -89,9 +109,10 @@ jobs:
           labels: |
             org.opencontainers.image.title=lms-${{ matrix.image }}
             org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.description=White-label Leave Management System (${{ matrix.image }})
       - uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ matrix.context || '.' }}
           target: ${{ matrix.target }}
           platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true

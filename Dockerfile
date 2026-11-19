@@ -42,6 +42,5 @@ RUN --mount=type=bind,from=composer:2,source=/usr/bin/composer,target=/usr/bin/c
 
 FROM nginx:1.30-alpine AS nginx
 COPY docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY public/ /usr/share/nginx/html/
-RUN rm -f /usr/share/nginx/html/index.php /usr/share/nginx/html/frankenphp-worker.php
-ENV APP_UPSTREAM=app:8000 NGINX_RESOLVER=127.0.0.11
+# Pure proxy: no static files (D-43); Laravel serves /branding/*, Next serves /_next/*.
+ENV APP_UPSTREAM=app:8000 WEB_UPSTREAM=web:3000 NGINX_RESOLVER=127.0.0.11

@@ -8,10 +8,11 @@ env:
 
 vars:
   RUN: docker compose run --rm app
+  WEB: docker compose run --rm web-dev
 
 tasks:
   up:
-    desc: Start the dev stack in the background
+    desc: Start the dev stack in the background (first time, or after new migrations, run `task migrate`)
     cmds: [docker compose up -d]
 
   down:
@@ -45,8 +46,32 @@ tasks:
     cmds: ['{{.RUN}} vendor/bin/pint --test']
 
   migrate:
-    desc: Run migrations as a one-off job
-    cmds: [docker compose run --rm migrate]
+    desc: Run Laravel and Better Auth (lms_auth) migrations as one-off jobs
+    cmds:
+      - docker compose run --rm migrate
+      - docker compose run --rm web-migrate
+
+  reload:
+    desc: Pick up PHP code changes in dev (restart Octane workers on every app replica; queue workers restart after their job)
+    cmds:
+      - for c in $(docker compose ps -q app); do docker exec "$c" curl -fsS -X POST http://localhost:2019/frankenphp/workers/restart; done
+      - docker compose exec app php artisan queue:restart
+
+  web:install:
+    desc: Install web/ node_modules into the web-dev volume (once, and after package-lock changes)
+    cmds: ['{{.WEB}} npm ci']
+
+  web:test:
+    desc: 'web/ checks: ESLint + Prettier, tsc, Vitest, generated API types fresh'
+    cmds: ['{{.WEB}} sh -c "npm run lint && npm run typecheck && npm test && npm run check:api"']
+
+  web:build:
+    desc: next build (standalone) in the web-dev container
+    cmds: ['{{.WEB}} npm run build']
+
+  web:gen-api:
+    desc: Regenerate web/src/lib/api/schema.d.ts from docs/api/openapi.yaml
+    cmds: ['{{.WEB}} npm run gen:api']
 
   shell:
     desc: Open a shell in a one-off app container
@@ -54,5 +79,5 @@ tasks:
     cmds: ['{{.RUN}} sh']
 
   logs:
-    desc: Follow app and worker logs
-    cmds: [docker compose logs -f app worker]
+    desc: Follow app, web and worker logs
+    cmds: [docker compose logs -f app web worker]

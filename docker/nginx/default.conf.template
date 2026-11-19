@@ -1,8 +1,10 @@
-# Edge reverse proxy + load balancer in front of N FrankenPHP/Octane replicas (D-24, D-27). No FastCGI.
+# Edge reverse proxy + load balancer (D-24, D-27, D-43): /api/, /healthz, /readyz, /branding/ -> app (Laravel);
+# everything else -> web (Next.js + BFF). No static files, no FastCGI.
 log_format lms '$remote_addr - [$time_local] "$request" $status $body_bytes_sent '
                'rid=$request_id upstream=$upstream_addr rt=$request_time';
 
-# Re-resolve APP_UPSTREAM so `--scale app=N` (and replaced replicas) are picked up; round-robin, no sticky sessions.
+# Re-resolve the upstream names so `--scale app=N` / `--scale web=N` (and replaced replicas) are picked up;
+# round-robin, no sticky sessions.
 resolver ${NGINX_RESOLVER} valid=5s ipv6=off;
 
 upstream app {
@@ -11,21 +13,44 @@ upstream app {
     keepalive 16;
 }
 
+upstream web {
+    zone web 64k;
+    server ${WEB_UPSTREAM} resolve;
+    keepalive 16;
+}
+
 server {
     listen 80 default_server;
     server_name _;
-    root /usr/share/nginx/html;
 
     server_tokens off;
     client_max_body_size 8m;
     charset utf-8;
+    # Better Auth session + JWE cookie-cache cookies (D-43, D-45).
+    large_client_header_buffers 4 16k;
 
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # Set only for web responses (location /); nginx skips headers with an empty value, so app responses get none.
+    set $csp "";
+    add_header Content-Security-Policy $csp always;
 
     access_log /dev/stdout lms;
     error_log /dev/stderr warn;
+
+    # $http_host keeps the client's port (e.g. :8080), so Laravel and Better Auth build correct absolute URLs.
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_set_header Content-Security-Policy $csp;
+    proxy_hide_header X-Powered-By;
+    proxy_read_timeout 60s;
 
     location = /nginx-health {
         access_log off;
@@ -33,28 +58,34 @@ server {
         return 200 "ok";
     }
 
-    # Static files from public/ (baked into the image); everything else goes to the app.
-    location / {
-        try_files $uri @app;
+    # Laravel only. ^~ so no other location can steal these prefixes.
+    location ^~ /api/ {
+        proxy_pass http://app;
+        proxy_next_upstream error timeout http_502 http_503;
+    }
+    location = /healthz {
+        proxy_pass http://app;
+    }
+    location = /readyz {
+        proxy_pass http://app;
+    }
+    location ^~ /branding/ {
+        proxy_pass http://app;
+        proxy_next_upstream error timeout http_502 http_503;
     }
 
-    # PHP is never served as a file.
-    location ~ \.php$ { return 404; }
-    location ~ /\.(?!well-known) { deny all; }
+    # Next.js: pages, /auth/* (Better Auth), /bff/* (BFF), /_next/* (static chunks; Next sets immutable caching).
+    location / {
+        # CSP (D-49 proposed): scripts need a per-request nonce. nginx's $request_id (128 bit, RAND_bytes) is the
+        # nonce; it is sent to Next as a request CSP header, from which Next stamps its inline scripts.
+        # Styles allow 'unsafe-inline' because antd v6 injects runtime CSS-in-JS <style> tags and style attributes.
+        # No form-action: the logout/sign-in POSTs redirect to Keycloak (another origin), which form-action would block.
+        set $csp "default-src 'self'; script-src 'self' 'nonce-$request_id'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
-    location @app {
-        proxy_pass http://app;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        # $http_host keeps the client's port (e.g. :8080), so Laravel builds correct URLs.
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Request-Id $request_id;
-        proxy_hide_header X-Powered-By;
-        proxy_next_upstream error timeout http_502 http_503;
-        proxy_read_timeout 60s;
+        # Set-Cookie headers from Better Auth exceed the 4k default.
+        proxy_buffer_size 16k;
+        proxy_buffers 8 16k;
+        proxy_busy_buffers_size 32k;
+        proxy_pass http://web;
     }
 }

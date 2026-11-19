@@ -158,6 +158,61 @@ final class KeycloakJwtTest extends TestCase
         $this->withToken($this->jwt())->getJson('/api/v1/me')->assertUnauthorized();
     }
 
+    // First API call = first login (D-43): the linking rules from the removed web callback, now on the guard path.
+    public function test_first_call_links_precreated_user_by_verified_email(): void
+    {
+        $user = User::factory()->create(['keycloak_sub' => null, 'email' => 'alice@example.test']);
+
+        $this->withToken($this->jwt())->getJson('/api/v1/me')->assertOk()->assertJsonPath('data.id', $user->public_id);
+
+        $this->assertSame('sub-alice', $user->fresh()->keycloak_sub);
+        $this->assertSame(1, User::query()->count());
+    }
+
+    public function test_first_call_relinks_stale_sub_by_verified_email(): void
+    {
+        $user = User::factory()->create(['keycloak_sub' => 'sub-old', 'email' => 'alice@example.test']);
+
+        $this->withToken($this->jwt())->getJson('/api/v1/me')->assertOk()->assertJsonPath('data.id', $user->public_id);
+        $this->assertSame('sub-alice', $user->fresh()->keycloak_sub);
+    }
+
+    public function test_unverified_email_never_links_an_existing_user(): void
+    {
+        User::factory()->create(['keycloak_sub' => null, 'email' => 'alice@example.test']);
+
+        $this->withToken($this->jwt(['email_verified' => false]))->getJson('/api/v1/me')->assertForbidden();
+        $this->assertNull(User::query()->sole()->keycloak_sub);
+    }
+
+    // `api` module off gates third-party clients only; the BFF (`azp` = KEYCLOAK_CLIENT_ID) keeps working (D-43 g).
+    public function test_api_module_off_third_party_token_is_404(): void
+    {
+        config(['modules.licensed' => ['holidays']]);
+
+        $this->withToken($this->jwt(['azp' => 'lms-api-cli']))->getJson('/api/v1/me')->assertNotFound()->assertJsonPath('code', 'NOT_FOUND');
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_api_module_off_bff_token_passes(): void
+    {
+        config(['modules.licensed' => ['holidays']]);
+
+        $this->withToken($this->jwt(['azp' => 'lms-web']))->getJson('/api/v1/me')->assertOk()->assertJsonPath('data.email', 'alice@example.test');
+        // The bypass is limited to /api/v1 (guarded routes): docs stay 404 even for a BFF token.
+        $this->withToken($this->jwt(['azp' => 'lms-web']))->get('/api/docs')->assertNotFound();
+    }
+
+    public function test_api_module_off_forged_bff_token_is_401(): void
+    {
+        config(['modules.licensed' => ['holidays']]);
+        $forged = $this->jwt(['azp' => 'lms-web'], key: self::newKey()); // right kid, wrong signing key
+
+        $this->withToken($forged)->getJson('/api/v1/me')->assertUnauthorized()->assertJsonPath('code', 'UNAUTHENTICATED');
+        $this->withToken($this->forged(['alg' => 'none'], ['azp' => 'lms-web']))->getJson('/api/v1/me')->assertUnauthorized();
+        $this->assertDatabaseCount('users', 0);
+    }
+
     public function test_role_and_admin_middleware_and_guard_is_request_scoped(): void
     {
         Route::middleware(['api', 'auth:keycloak-jwt', 'role:hr_admin,manager'])->get('/api/_test/managers', fn () => ['ok' => true]);

@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use App\Exceptions\ProblemJsonRenderer;
-use App\Http\Controllers\HealthController;
 use App\Http\Middleware\EnsureAdmin;
 use App\Http\Middleware\EnsureIdempotency;
 use App\Http\Middleware\EnsureModuleEnabled;
@@ -14,20 +13,14 @@ use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
-        web: __DIR__.'/../routes/web.php',
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
-        then: function (): void {
-            Route::middleware('web')->group(base_path('routes/auth.php'));
-            // Outside the web group: no session, cookies or CSRF.
-            Route::get('/healthz', [HealthController::class, 'live']);
-            Route::get('/readyz', [HealthController::class, 'ready']);
-        },
+        // API-only (D-43): routes/web.php is loaded outside the `web` group, so no session, cookies or CSRF.
+        then: fn () => Route::group([], base_path('routes/web.php')),
     )
     ->withMiddleware(function (Middleware $middleware): void {
         // Trusted proxies come from config/trustedproxy.php (TRUSTED_PROXIES).
@@ -41,10 +34,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'idempotent' => EnsureIdempotency::class,
             'active' => EnsureUserIsActive::class,
         ]);
+        // No login route (D-43): unauthenticated is always a 401 problem, never a redirect.
+        $middleware->redirectGuestsTo(fn (): ?string => null);
         // Auth is in Laravel's priority list and would otherwise run first: a disabled module must 404, not 401.
         $middleware->prependToPriorityList(AuthenticatesRequests::class, EnsureModuleEnabled::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(new ProblemJsonRenderer);
-        $exceptions->shouldRenderJsonWhen(fn (Request $request): bool => $request->is('api', 'api/*') || $request->expectsJson());
+        // Laravel renders no HTML pages (D-43): every error, also on /healthz or /branding/*, is problem+json.
+        $exceptions->shouldRenderJsonWhen(fn (): bool => true);
     })->create();

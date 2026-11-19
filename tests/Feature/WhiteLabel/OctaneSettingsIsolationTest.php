@@ -37,10 +37,10 @@ final class OctaneSettingsIsolationTest extends TestCase
             $worker = new FakeWorker(new ApplicationFactory($this->app->basePath()), $client);
             $worker->boot();
 
-            $worker->handle($request = Request::create('/'), new RequestContext(['request' => $request]));
+            $worker->handle($request = Request::create('/api/v1/branding'), new RequestContext(['request' => $request]));
             // Another replica resets branding (Settings::forget busts the shared cache; the worker's array cache is flushed per request).
             $side->table('settings')->whereIn('key', ['brand.name', 'brand.primary_color'])->delete();
-            $worker->handle($request = Request::create('/'), new RequestContext(['request' => $request]));
+            $worker->handle($request = Request::create('/api/v1/branding'), new RequestContext(['request' => $request]));
         } finally {
             $side->table('settings')->whereIn('key', ['brand.name', 'brand.primary_color'])->delete();
             // The worker app re-pointed the global container/facades at itself.
@@ -51,10 +51,8 @@ final class OctaneSettingsIsolationTest extends TestCase
 
         $this->assertSame([], $client->errors);
         [$a, $b] = array_map(fn ($r): string => (string) $r->getContent(), $client->responses);
-        $this->assertStringContainsString('<title>Octane Brand A</title>', $a);
-        $this->assertStringContainsString('--brand-primary:#ffd700;', $a);
-        $this->assertStringContainsString('<title>Leave Manager</title>', $b);
-        $this->assertStringContainsString('--brand-primary:#1f6feb;', $b);
+        $this->assertSame(['Octane Brand A', '#ffd700'], [json_decode($a)->data->name, json_decode($a)->data->primary_color]);
+        $this->assertSame(['Leave Manager', '#1f6feb'], [json_decode($b)->data->name, json_decode($b)->data->primary_color]);
         $this->assertStringNotContainsString('Octane Brand A', $b);
     }
 }

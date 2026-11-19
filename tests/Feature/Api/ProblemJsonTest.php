@@ -160,10 +160,13 @@ final class ProblemJsonTest extends TestCase
         $this->assertMatchesSpec($response, '/admin/users', 'get');
     }
 
-    public function test_web_routes_keep_the_default_renderer(): void
+    public function test_api_only_no_html_pages_and_no_login_redirect(): void
     {
-        $response = $this->get('/definitely-not-a-page')->assertNotFound();
-
-        $this->assertStringStartsWith('text/html', (string) $response->headers->get('Content-Type'));
+        // D-43: the old Blade pages are gone and any non-API path is a problem+json 404, never HTML.
+        foreach (['/', '/leave-requests', '/approvals', '/holidays', '/login', '/auth/callback'] as $uri) {
+            $this->assertProblem($this->get($uri), 404, 'NOT_FOUND');
+        }
+        // No Accept header: still 401 problem, not a redirect to a (non-existent) login route.
+        $this->assertProblem($this->get('/api/v1/me'), 401, 'UNAUTHENTICATED');
     }
 }

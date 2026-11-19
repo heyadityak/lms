@@ -55,7 +55,7 @@ final class OctaneIdentityIsolationTest extends TestCase
             $send($worker, null);                                         // B: no token
             $send($worker, $token($subs[1], ['employee']));                 // C: bob, employee
             $send($worker, 'not-a-jwt');                                  // D: garbage token
-            $send($worker, null, '/');                                    // E: web landing, guest
+            $send($worker, null, '/api/v1/branding');                     // E: public branding, guest
         } finally {
             $side->table('settings')->where('key', 'brand.name')->delete();
             $side->table('users')->whereIn('keycloak_sub', $subs)->delete();
@@ -77,9 +77,9 @@ final class OctaneIdentityIsolationTest extends TestCase
         $this->assertSame(401, $d->getStatusCode());
 
         $this->assertSame(200, $e->getStatusCode());
-        $html = (string) $e->getContent();
-        $this->assertStringNotContainsString('Brand of A', $html);
-        $this->assertStringNotContainsString("alice-{$tag}", $html);
-        $this->assertStringNotContainsString("bob-{$tag}", $html);
+        $body = (string) $e->getContent();
+        $this->assertSame('Leave Manager', json_decode($body)->data->name);
+        $this->assertStringNotContainsString("alice-{$tag}", $body);
+        $this->assertStringNotContainsString("bob-{$tag}", $body);
     }
 }

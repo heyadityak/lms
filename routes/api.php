@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\ApprovalController;
+use App\Http\Controllers\Api\V1\BrandingController;
 use App\Http\Controllers\Api\V1\HolidayController;
 use App\Http\Controllers\Api\V1\LeaveRequestController;
 use App\Http\Controllers\Api\V1\LeaveTypeController;
@@ -16,7 +17,10 @@ Route::middleware('module:api')->group(function (): void {
     Route::get('/docs', [ApiDocsController::class, 'ui'])->name('api.docs');
 });
 
-// /api/v1: module gate (404) → Keycloak Bearer JWT (401, D-20) → `active` (401) → Redis rate limit (X-RateLimit-*, 429).
+// Public branding for the Next.js theme and nav (D-43): no auth, no `module:api`, per-IP limiter `public`.
+Route::get('/v1/branding', [BrandingController::class, 'show'])->middleware('throttle:public')->name('api.v1.branding');
+
+// /api/v1: module gate (404; the first-party BFF passes, D-43) → Keycloak Bearer JWT (401, D-20) → `active` (401) → Redis rate limit (X-RateLimit-*, 429).
 // `idempotent` on POST /leave-requests (+ POST /admin/users in phase 9) only.
 Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-jwt', 'active', 'throttle:api'])->group(function (): void {
     Route::get('/me', [MeController::class, 'show'])->name('me');

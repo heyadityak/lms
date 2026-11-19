@@ -10,6 +10,8 @@
   "duplicateEmailsAllowed": false,
   "editUsernameAllowed": false,
   "accessTokenLifespan": 300,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 1,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
   "bruteForceProtected": true,
@@ -66,7 +68,7 @@
     {
       "clientId": "lms-web",
       "name": "LMS web app",
-      "description": "Confidential OIDC client for the Laravel web login (auth code). Secret below is DEV ONLY; regenerate per deployment.",
+      "description": "Next.js BFF client (auth code + PKCE S256, D-43). DEV ONLY: secret and localhost:8080 URIs; per deployment use ${APP_URL}/auth/*, ${APP_URL}, ${APP_URL}/ and a new secret.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -77,13 +79,13 @@
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:8080/auth/callback"
+        "http://localhost:8080/auth/*"
       ],
       "webOrigins": [
         "http://localhost:8080"
       ],
       "attributes": {
-        "post.logout.redirect.uris": "http://localhost:8080/*",
+        "post.logout.redirect.uris": "http://localhost:8080/",
         "pkce.code.challenge.method": "S256"
       },
       "protocolMappers": [

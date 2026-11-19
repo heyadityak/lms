@@ -37,14 +37,4 @@ return [
         ],
     ],
 
-    // socialiteproviders/keycloak (web login). Values come from config/keycloak.php's env vars.
-    'keycloak' => [
-        'client_id' => env('KEYCLOAK_CLIENT_ID', 'lms-web'),
-        'client_secret' => env('KEYCLOAK_CLIENT_SECRET'),
-        'redirect' => env('KEYCLOAK_REDIRECT_URI', 'http://localhost:8080/auth/callback'),
-        'base_url' => env('KEYCLOAK_BASE_URL', 'http://keycloak:8080'),
-        'public_url' => env('KEYCLOAK_PUBLIC_URL', 'http://localhost:8081'),
-        'realms' => env('KEYCLOAK_REALM', 'lms'),
-    ],
-
 ];

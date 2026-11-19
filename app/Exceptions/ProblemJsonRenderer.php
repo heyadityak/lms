@@ -13,7 +13,7 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Throwable;
 
 /**
- * Renders every /api/* error as RFC 9457 application/problem+json (API_GUIDELINES §4).
+ * Renders every error as RFC 9457 application/problem+json (API_GUIDELINES §4); Laravel is API-only (D-43).
  * Runs after Laravel's prepareException(), so ModelNotFound/Authorization arrive as 404/403 HttpExceptions.
  */
 final class ProblemJsonRenderer
@@ -34,12 +34,8 @@ final class ProblemJsonRenderer
         503 => 'SERVICE_UNAVAILABLE',
     ];
 
-    public function __invoke(Throwable $e, Request $request): ?JsonResponse
+    public function __invoke(Throwable $e, Request $request): JsonResponse
     {
-        if (! $request->is('api', 'api/*')) {
-            return null;
-        }
-
         $headers = [];
         $errors = [];
         $detail = null;

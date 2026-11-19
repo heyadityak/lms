@@ -40,7 +40,6 @@
         <!-- Separate Redis DBs so tests never touch dev data in DB 0-3 (qa, phase 7). -->
         <env name="REDIS_DB" value="10" force="true"/>
         <env name="REDIS_CACHE_DB" value="11" force="true"/>
-        <env name="REDIS_SESSION_DB" value="12" force="true"/>
         <env name="REDIS_QUEUE_DB" value="13" force="true"/>
         <env name="PULSE_ENABLED" value="false" force="true"/>
         <env name="TELESCOPE_ENABLED" value="false" force="true"/>

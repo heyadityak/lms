@@ -35,7 +35,7 @@ return [
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),
-            'serve' => true,
+            'serve' => false, // no /storage/{path} routes: API-only, public files only via /branding/{asset} (D-43)
             'throw' => false,
             'report' => false,
         ],

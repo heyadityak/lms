@@ -27,9 +27,14 @@ final readonly class Brand
             primary: $primary,
             accent: $color('brand.accent_color'),
             contrast: BrandColor::contrast($primary),
-            // Uploaded assets are served by GET /branding/{asset} (phase 9); otherwise the bundled defaults.
-            logoUrl: $settings->get('brand.logo_path') ? url('/branding/logo') : asset('img/default-logo.png'),
-            faviconUrl: $settings->get('brand.favicon_path') ? url('/branding/favicon') : asset('favicon.ico'),
+            logoUrl: self::assetUrl('logo', $settings->get('brand.logo_path')),
+            faviconUrl: self::assetUrl('favicon', $settings->get('brand.favicon_path')),
         );
+    }
+
+    /** Always GET /branding/{asset} (bundled default when not overridden, D-43); `v` busts caches on change. */
+    private static function assetUrl(string $asset, mixed $path): string
+    {
+        return url("/branding/{$asset}").'?v='.(is_string($path) && $path !== '' ? substr(sha1($path), 0, 12) : 'default');
     }
 }

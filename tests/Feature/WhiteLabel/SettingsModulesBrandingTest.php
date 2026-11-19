@@ -10,7 +10,6 @@ use App\Models\User;
 use App\Support\Modules;
 use App\Support\Settings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 
@@ -59,47 +58,6 @@ final class SettingsModulesBrandingTest extends TestCase
             ->assertNotFound()
             ->assertHeader('Content-Type', 'application/problem+json')
             ->assertJsonPath('code', 'NOT_FOUND');
-    }
-
-    public function test_module_blade_directive_hides_markup(): void
-    {
-        $template = "@module('holidays')<a>Holidays</a>@endmodule<p>Core</p>";
-        $this->assertStringContainsString('Holidays', Blade::render($template));
-
-        $this->freshSettings()->set('modules.disabled', ['holidays']);
-        $this->app->forgetScopedInstances(); // next request
-        $html = Blade::render($template);
-        $this->assertStringNotContainsString('Holidays', $html);
-        $this->assertStringContainsString('Core', $html);
-    }
-
-    public function test_branding_is_rendered_as_css_variables(): void
-    {
-        $this->get('/')->assertOk()
-            ->assertSee('<title>Leave Manager</title>', false)
-            ->assertSee(':root{--brand-primary:#1f6feb;--brand-accent:#0e8a16;--brand-primary-contrast:#ffffff;}', false)
-            ->assertSee(asset('img/default-logo.png'), false);
-
-        $settings = $this->freshSettings();
-        $settings->set('brand.name', 'Acme HR');
-        $settings->set('brand.primary_color', '#ffd700');
-        $settings->set('brand.logo_path', 'logo-abc.png');
-        $this->app->forgetScopedInstances();
-
-        $this->get('/')->assertOk()
-            ->assertSee('<title>Acme HR</title>', false)
-            ->assertSee('--brand-primary:#ffd700;--brand-accent:#0e8a16;--brand-primary-contrast:#000000;', false)
-            ->assertSee(url('/branding/logo'), false);
-    }
-
-    public function test_invalid_stored_colour_falls_back_to_default(): void
-    {
-        // Bypasses validation, as a tampered row would.
-        Setting::query()->create(['key' => 'brand.primary_color', 'value' => 'red;}body{display:none']);
-
-        $this->get('/')->assertOk()
-            ->assertSee('--brand-primary:#1f6feb;', false)
-            ->assertDontSee('display:none', false);
     }
 
     public function test_settings_and_modules_are_scoped_bindings(): void

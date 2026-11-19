@@ -39,6 +39,8 @@ return [
     */
 
     'guards' => [
+        // Not used by any route (API-only, D-43; SESSION_DRIVER=array). Kept as the default guard only so
+        // feature tests can actingAs() a user; the JWT guard drops its user on request rebinding (Octane).
         'web' => [
             'driver' => 'session',
             'provider' => 'users',

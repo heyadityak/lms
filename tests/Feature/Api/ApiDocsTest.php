@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Api;
 
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /** /api/openapi.yaml + /api/docs: public, behind module:api (SYSTEM_DESIGN §6.2). */
 final class ApiDocsTest extends TestCase
 {
+    use RefreshDatabase; // module:api reads the settings table
+
     public function test_spec_is_served_without_auth(): void
     {
         $response = $this->get('/api/openapi.yaml')->assertOk();

@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use App\Models\Concerns\HasPublicId;
+use Database\Factories\HolidayFactory;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Holiday extends Model
+{
+    /** @use HasFactory<HolidayFactory> */
+    use HasFactory, HasPublicId;
+
+    protected $fillable = ['date', 'name'];
+
+    protected function casts(): array
+    {
+        return ['date' => 'date'];
+    }
+}

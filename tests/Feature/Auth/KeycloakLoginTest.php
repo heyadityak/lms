@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Auth;
 
+use App\Enums\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Socialite\Contracts\Provider;
@@ -43,7 +44,7 @@ final class KeycloakLoginTest extends TestCase
         $user = User::query()->sole();
         $this->assertAuthenticatedAs($user);
         $this->assertSame('sub-bob', $user->keycloak_sub);
-        $this->assertSame('employee', $user->role);
+        $this->assertSame(Role::Employee, $user->role);
         $this->assertFalse($user->is_admin);
         $this->assertSame('bob@example.test', $user->email);
     }
@@ -90,7 +91,7 @@ final class KeycloakLoginTest extends TestCase
 
         $this->assertAuthenticatedAs($user);
         $user->refresh();
-        $this->assertSame('manager', $user->role);
+        $this->assertSame(Role::Manager, $user->role);
         $this->assertTrue($user->is_admin);
     }
 

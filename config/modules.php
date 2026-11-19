@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// SYSTEM_DESIGN §8.3. Created by platform (phase 4) for the EnsureModuleEnabled stub; owned by domain.
+// SYSTEM_DESIGN §8.3 (D-14, D-34). `licensed` = env ceiling; admins may only disable licensed modules (setting `modules.disabled`).
 return [
     'licensed' => array_values(array_filter(array_map('trim', explode(',', (string) env('MODULES_ENABLED', 'holidays,reports,api,notifications,user_management'))))),
     'registry' => [

@@ -4,24 +4,18 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Enums\Module;
+use App\Support\Modules;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
-/**
- * `module:<key>`: 404 when the module is off (problem+json on /api/*).
- *
- * shortcut: platform stub, env licence + registry only (config/modules.php). Phase 5 (domain) replaces the
- * condition with app(Modules::class)->enabled(Module::from($module)) to add the DB `modules.disabled` override.
- */
+/** `module:<key>`: 404 when the module is off (D-17; problem+json on /api/*). Runs before auth (D-40 g). */
 final class EnsureModuleEnabled
 {
     public function handle(Request $request, Closure $next, string $module): Response
     {
-        abort_unless(
-            in_array($module, config('modules.licensed', []), true) && config("modules.registry.{$module}.available", false),
-            404,
-        );
+        abort_unless(app(Modules::class)->enabled(Module::from($module)), 404);
 
         return $next($request);
     }

@@ -10,6 +10,7 @@ use App\Exceptions\InvalidTransition;
 use App\Exceptions\LeaveRuleViolation;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Testing\TestResponse;
@@ -20,7 +21,7 @@ use Tests\TestCase;
 /** RFC 9457 shape per status (API_GUIDELINES §4); each response is also checked against the spec's response component. */
 final class ProblemJsonTest extends TestCase
 {
-    use ValidatesOpenApi;
+    use RefreshDatabase, ValidatesOpenApi;
 
     protected function setUp(): void
     {

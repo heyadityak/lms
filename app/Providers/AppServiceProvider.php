@@ -8,13 +8,19 @@ use App\Auth\JwksCache;
 use App\Auth\KeycloakJwtGuard;
 use App\Auth\KeycloakProvider;
 use App\Auth\KeycloakUserProvisioner;
+use App\Enums\Module;
+use App\Support\Modules;
+use App\Support\Settings;
+use App\View\Composers\BrandingComposer;
 use Carbon\CarbonImmutable;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
 use SocialiteProviders\Manager\SocialiteWasCalled;
 
@@ -25,7 +31,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Per request under Octane (D-27): settings/modules memoise for one request only.
+        $this->app->scoped(Settings::class);
+        $this->app->scoped(Modules::class);
     }
 
     /**
@@ -44,6 +52,10 @@ class AppServiceProvider extends ServiceProvider
 
             return $guard;
         });
+
+        // White-label (SYSTEM_DESIGN §8): `@module('x') … @endmodule` and `$brand` in every view.
+        Blade::if('module', fn (string $module): bool => app(Modules::class)->enabled(Module::from($module)));
+        View::composer('*', BrandingComposer::class);
 
         RateLimiter::for('login', fn (Request $request): Limit => Limit::perMinute(10)->by($request->ip()));
         RateLimiter::for('api', fn (Request $request): Limit => Limit::perMinute(60)->by($request->user()?->getAuthIdentifier() ?? $request->ip()));

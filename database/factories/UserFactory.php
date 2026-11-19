@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Database\Factories;
 
+use App\Enums\Role;
+use App\Models\Department;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
@@ -14,8 +16,6 @@ use Illuminate\Support\Str;
 class UserFactory extends Factory
 {
     /**
-     * Define the model's default state.
-     *
      * @return array<string, mixed>
      */
     public function definition(): array
@@ -23,22 +23,48 @@ class UserFactory extends Factory
         return [
             'name' => fake()->name(),
             'email' => fake()->unique()->safeEmail(),
-            'email_verified_at' => now(),
             'keycloak_sub' => (string) Str::uuid(),
-            'role' => 'employee',
+            'role' => Role::Employee,
             'is_admin' => false,
             'is_active' => true,
-            'remember_token' => Str::random(10),
+            'date_of_joining' => now()->subYears(2)->startOfMonth()->toDateString(),
         ];
     }
 
-    /**
-     * Indicate that the model's email address should be unverified.
-     */
-    public function unverified(): static
+    public function manager(): static
     {
-        return $this->state(fn (array $attributes) => [
-            'email_verified_at' => null,
-        ]);
+        return $this->state(['role' => Role::Manager]);
+    }
+
+    public function hrAdmin(): static
+    {
+        return $this->state(['role' => Role::HrAdmin]);
+    }
+
+    /** Additive realm role `admin` (D-29). */
+    public function admin(): static
+    {
+        return $this->state(['is_admin' => true]);
+    }
+
+    public function inactive(): static
+    {
+        return $this->state(['is_active' => false]);
+    }
+
+    /** Pre-created by HR/admin, not yet linked to a Keycloak account. */
+    public function unlinked(): static
+    {
+        return $this->state(['keycloak_sub' => null]);
+    }
+
+    public function managedBy(User $manager): static
+    {
+        return $this->state(['manager_id' => $manager->id]);
+    }
+
+    public function inDepartment(?Department $department = null): static
+    {
+        return $this->state(['department_id' => $department ?? Department::factory()]);
     }
 }

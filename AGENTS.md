@@ -39,7 +39,7 @@ Core features: employees apply for leave, managers approve/reject, HR admins (`h
 │   ├── php/php.ini  php/entrypoint.sh                  # entrypoint: caches, then Octane or classic FrankenPHP
 │   ├── keycloak/realm-lms.json                        # DEV realm import (clients, roles, alice/bob/carol/dave); prod = upstream Keycloak (D-33)
 │   └── postgres/init/01-test-db.sql                     # creates lms_test + keycloak DBs
-├── .github/workflows/ci.yml
+├── .github/workflows/{ci,package,wiki}.yml
 ├── app/
 │   ├── Actions/{Leave,Accrual,Users,Settings}/   # one public handle() per class, domain writes
 │   ├── Auth/                     # KeycloakUserProvisioner, KeycloakJwtGuard, JwksCache (D-20)
@@ -150,7 +150,7 @@ Minimum feature scenarios, owned by QA:
 18. Octane state leaks: on one worker (`Octane` test helper / `APP_SERVER_MODE=octane` in a dedicated feature test), run request A as alice under brand override X, then request B as bob with no override; assert B sees bob's identity, default branding, its own locale/settings and no leftover auth, scoped bindings or config from A.
 
 ## 7. CI
-`.github/workflows/ci.yml` (SYSTEM_DESIGN §13, D-25) on every PR/push: `lint` (pint --test), `openapi` (Redocly lint of `docs/api/openapi.yaml`), `unit`, `feature` (Postgres 17 + Redis 7 service containers; API responses validated against the spec), `smoke` (`docker compose up --wait`, migrate+seed, curl `/healthz`, `/readyz`, Keycloak discovery). `package` runs on push to `main` and `v*` tags after all of them and pushes `ghcr.io/${{ github.repository }}/app` (target `app-prod`) and `/nginx` (target `nginx`), lowercased = `ghcr.io/heyadityak/lms/{app,nginx}`: `linux/amd64` on `main`, `linux/amd64,linux/arm64` on `v*` tags.
+`.github/workflows/ci.yml` (SYSTEM_DESIGN §13, D-25, D-38) on every PR, push to `main` and manual dispatch: `lint` (pint --test), `openapi` (Redocly lint of `docs/api/openapi.yaml`), `unit`, `feature` (Postgres 17 + Redis 7 service containers; API responses validated against the spec). `.github/workflows/package.yml` runs on push to `main`, `v*` tags and manual dispatch: it calls `ci.yml` (`workflow_call`), then `smoke` (`docker compose up --wait --scale app=2`, one-off migrate, curl `/healthz`, `/readyz`, Keycloak discovery, `down -v`), then pushes `ghcr.io/${{ github.repository }}/app` (target `app-prod`) and `/nginx` (target `nginx`), lowercased = `ghcr.io/heyadityak/lms/{app,nginx}`: `linux/amd64` on `main`, `linux/amd64,linux/arm64` on `v*` tags.
 
 ## 8. Definition of done (per task)
 - [ ] Behaviour matches USE_CASES/SYSTEM_DESIGN. Any deviation is recorded as an ADR in `.logs/decisions.md`.

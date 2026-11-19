@@ -1,0 +1,111 @@
+name: CI
+
+# Fast checks on the runner (setup-php, D-10/D-25). Docker parity (compose smoke + image build) is in package.yml,
+# which also calls this workflow (workflow_call) so images are only pushed after it passes.
+# No push trigger: pushes to main run CI via package.yml (workflow_call), so it runs once.
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# "ci-" prefix: when called from package.yml, github.workflow is the caller's name, and the group must not
+# equal the caller's own group or the run deadlocks.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PHP_VERSION: "8.4"
+  PHP_EXTENSIONS: pdo_pgsql, redis, intl, zip, pcntl, bcmath
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+      - id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+      - run: composer install --no-interaction --no-progress --prefer-dist
+      - run: vendor/bin/pint --test
+
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Fails on errors only; the 2 documented warnings (/healthz, /readyz) are accepted.
+      - run: npx --yes @redocly/cli@2.80.0 lint docs/api/openapi.yaml
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+      - id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+      - run: composer install --no-interaction --no-progress --prefer-dist
+      - run: cp .env.example .env && php artisan key:generate
+      - run: php artisan test --testsuite=Unit
+
+  feature:
+    runs-on: ubuntu-latest
+    services:
+      # POSTGRES_USER is a superuser, so migrations can CREATE EXTENSION btree_gist themselves.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: lms_test
+          POSTGRES_USER: lms
+          POSTGRES_PASSWORD: secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lms -d lms_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      # Real env beats .env; phpunit.xml still forces DB_DATABASE=lms_test and the array drivers.
+      DB_HOST: 127.0.0.1
+      REDIS_HOST: 127.0.0.1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+      - id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+      - run: composer install --no-interaction --no-progress --prefer-dist
+      - run: cp .env.example .env && php artisan key:generate
+      - run: php artisan test --testsuite=Feature

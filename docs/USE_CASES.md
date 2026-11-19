@@ -1,6 +1,6 @@
 # LMS — Use Cases & Business Rules
 
-Status: v1.3 (architect, 2026-11-19; Keycloak identity D-20, API contract D-21, in-app user admin D-22, `admin` role D-29, editable weekend D-30, review answers D-31…D-34). Source of truth for *what* the system does. *How* lives in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md).
+Status: v1.4 (architect, 2026-11-19; Next.js frontend + BFF D-43; Keycloak identity D-20, API contract D-21, in-app user admin D-22, `admin` role D-29, editable weekend D-30, review answers D-31…D-34). Source of truth for *what* the system does. *How* lives in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md).
 
 ## 1. Actors
 
@@ -25,11 +25,11 @@ Legend: **MVP** = build now. **Later** = documented so the data model does not b
 
 | ID | Use case | Scope | Notes |
 |---|---|---|---|
-| UC-E1 | Log in / log out via Keycloak SSO (OIDC auth code; RP-initiated logout) | MVP | First login provisions the user (§3.10). Inactive users are refused after the callback. |
+| UC-E1 | Log in / log out via Keycloak SSO (OIDC auth code run by the Next.js BFF; RP-initiated logout) | MVP | The first API call after sign-in provisions the user (§3.10). Inactive users (401) and users without a base role (403, D-39) are refused by the API; the frontend clears its session and shows an access-denied page. |
 | UC-E2 | Forgot / reset password | Keycloak | Not built in the app (D-20). Keycloak account console / login page. |
 | UC-E3 | Change own password, MFA | Keycloak | Not built in the app (D-20). |
 | UC-E4 | View dashboard: balances per leave type for current year (entitled, used, pending, available) | MVP | |
-| UC-E5 | Apply for leave (type, start, end, day part, reason, optional handover note) | MVP | Rules §3. Notifies approver. |
+| UC-E5 | Apply for leave (type, start, end, day part, reason, optional handover note) | MVP | Rules §3. Notifies approver. The form shows the server-computed day count and remaining balance from a dry run (`POST /leave-requests/preview`, D-43) before submit. |
 | UC-E6 | View own requests (filter by status/year) + request detail with action history | MVP | |
 | UC-E7 | Cancel own request (pending, or approved before start date) | MVP | Rules §3.6. |
 | UC-E8 | View holiday calendar for a year | MVP | |
@@ -37,7 +37,7 @@ Legend: **MVP** = build now. **Later** = documented so the data model does not b
 | UC-E10 | Upload attachment (e.g. medical certificate) | Later | |
 | UC-E11 | Profile picture | Later | Original had it. |
 | UC-E12 | Download leave application PDF | Later | Original used DOMPDF. |
-| UC-E13 | Team calendar (who's off) | Later | |
+| UC-E13 | Team calendar (who's off) | Later | Managers and HR already see their visible requests as "Team Time Off" on the dashboard (D-43); this use case is the employee-wide view (colleagues' leave), which widens visibility. |
 | UC-E14 | Hourly / partial-day leave | Later | |
 
 ### 2.2 Manager
@@ -226,7 +226,7 @@ Every transition writes one `leave_request_actions` row: actor, from, to, commen
 |---|---|---|---|---|
 | `holidays` | yes | Holiday CRUD + calendar view, holiday exclusion in day count | Routes 404. Menu hidden. `WorkingDayCalculator` ignores the holidays table (weekends only). Rows are kept. | MVP |
 | `reports` | yes | UC-H7, UC-H8 | Routes 404, menu hidden | MVP |
-| `api` | yes | All `/api/v1/*` and `/api/docs` | 404 `application/problem+json`. Keycloak tokens are still issued (IdP) but the app refuses them. | MVP |
+| `api` | yes | **Third-party** access to `/api/v1/*` and `/api/docs` (D-43) | 404 `application/problem+json` for third-party tokens (`lms-api-cli`) and `/api/docs`. The web frontend keeps working (its BFF token `azp` = `lms-web` is always served), and `GET /api/v1/branding` stays public. | MVP |
 | `notifications` | yes | UC-S2 leave emails (submitted/decided/cancelled) | Not dispatched. (Password and account mails are Keycloak's, unaffected.) | MVP |
 | `user_management` | yes (SMB); **leave it out for directory-backed realms** (LDAP/AD/Entra, D-34) | UC-U1–U7 (identity admin via Keycloak Admin API) | Routes 404, menu hidden. Users are managed in Keycloak / the customer's directory; HR still edits LMS fields (UC-H2). `admin` keeps branding/modules. | MVP |
 | `multi_level_approval` | no | UC-M6 | Single-level only | Later (key reserved, registry entry `available=false`) |
@@ -237,18 +237,18 @@ Every transition writes one `leave_request_actions` row: actor, from, to, commen
 Effective state: `enabled(m) = m ∈ MODULES_ENABLED (env, licensed) AND m ∉ settings['modules.disabled'] AND registry[m].available`.
 
 ### 3.9 Other rules
-- Users are **never hard-deleted** (the original deleted employee rows and lost history). Deactivation (`users.is_active=false`) refuses web login after the Keycloak callback, rejects API requests even with a valid JWT (401), logs out existing sessions on their next request, and excludes the user from accrual. Disabling the account in Keycloak/the directory as well is recommended (operator). Pending requests of a deactivated user are auto-cancelled by the system (actor = the HR admin or admin who deactivated/disabled).
+- Users are **never hard-deleted** (the original deleted employee rows and lost history). Deactivation (`users.is_active=false`) rejects API requests even with a valid JWT (401), so the web frontend drops the user's session on the next request (D-43), and excludes the user from accrual. Disabling the account in Keycloak/the directory as well is recommended (operator). Pending requests of a deactivated user are auto-cancelled by the system (actor = the HR admin or admin who deactivated/disabled).
 - A manager cannot be their own manager. `manager_id` chains must not form cycles; validate on save by walking up to depth 10.
 - Changing a leave type's quota affects only **future** grants. Existing ledger rows are never rewritten.
 - Holidays added after approval do **not** recompute approved requests (documented limitation; HR can adjust). The same applies to weekend-day changes (UC-H16): `days` of pending and approved requests stays as computed at submit (D-30).
 - All dates are `DATE` (no time). "today" = `now(APP_TIMEZONE)->toDateString()`.
 
 ### 3.10 Identity & provisioning (Keycloak, D-20)
-- The app has no passwords. Web login is OIDC auth code against realm `lms`, client `lms-web`. API clients use client `lms-api-cli` (public, PKCE) and send `Authorization: Bearer <access token>`.
-- **First login** (no `users` row with this `keycloak_sub`): if a row exists with the same email (case-insensitive, `email_verified` claim true) and no `keycloak_sub` (e.g. migrated data), link it; otherwise create the user with `name`, `email` from the token, role from realm roles, `department_id`/`manager_id` null, `is_active=true`.
-- **Every login / API call**: `name`, `email`, `role` and `is_admin` are refreshed from the token (Keycloak wins). A token with no LMS realm role is refused (403 page / 401 API).
+- The app has no passwords. Web login is OIDC auth code against realm `lms`, client `lms-web`, run server-side by the Next.js BFF; the browser never holds tokens (D-43). API clients use client `lms-api-cli` (public, PKCE) and send `Authorization: Bearer <access token>`.
+- **First login** = the first API call with a token for this `sub` (no `users` row with this `keycloak_sub`): if a row exists with the same email (case-insensitive, `email_verified` claim true) and no `keycloak_sub` (e.g. migrated data), link it; otherwise create the user with `name`, `email` from the token, role from realm roles, `department_id`/`manager_id` null, `is_active=true`.
+- **Every login / API call**: `name`, `email`, `role` and `is_admin` are refreshed from the token (Keycloak wins). A token with no LMS base role is refused (403 from the API, D-39; the frontend shows an access-denied page).
 - Roles change in the app only through UC-U6 (module `user_management`), which writes to Keycloak first and then mirrors. Department, manager, joining date and active flag stay app-owned.
-- Logout is RP-initiated: the app clears its Redis session and redirects to Keycloak's end-session endpoint with `id_token_hint`.
+- Logout is RP-initiated: the frontend clears its session cookie and redirects to Keycloak's end-session endpoint with `id_token_hint`.
 
 ### 3.11 User-admin guardrails (D-22)
 | # | Rule | Error |

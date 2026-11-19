@@ -25,7 +25,7 @@ Business rules come from [USE_CASES.md](../USE_CASES.md); tables from [SYSTEM_DE
 | D8 Settings | Postgres | `settings` (`brand.*`, `modules.disabled`, `work.weekend_days`) | P9 |
 | D9 Failed jobs | Postgres | `failed_jobs` | P7 |
 | D10 Branding assets | RustFS (S3-compatible), `BRANDING_DISK=s3` | `logo-{sha1}.{ext}`, `favicon-{sha1}.{ext}` | P9 |
-| D11 Session store | Redis DB 2 | `lms-…session:{id}` (user id, `id_token`, CSRF token) | P1 |
+| D11 Web session (browser cookie) | Encrypted Auth.js cookie held by the browser, readable only by `web` (`AUTH_SECRET`); no server store since D-43 | access, refresh and id token, `expires_at` | P1 |
 | D12 Cache, locks, rate limits | Redis DB 1 | `settings:all`, `keycloak:jwks`, `keycloak:admin-token`, `idem:{user}:{key}`, schedule / guard locks, `throttle:*` | P1, P2, P6, P9, P11 |
 | D13 Queue | Redis DB 3 | `queues:default` (notification jobs) | P2, P3, P4 → read by P7 |
 | D14 User-admin audit | Postgres | `user_admin_audits` (append-only) | P11 |
@@ -89,15 +89,15 @@ flowchart LR
     D7[[D7 leave_ledger_entries]]
     D8[[D8 settings]]
     D9[[D9 failed_jobs]]
-    D11[[D11 Redis session]]
+    D11[[D11 Web session cookie<br/>encrypted, web only]]
     D12[[D12 Redis cache / JWKS /<br/>idempotency / throttle]]
     D13[[D13 Redis queue]]
 
-    EMP -->|browser redirect / Bearer JWT| P1
-    KC -->|code → tokens, JWKS| P1
+    EMP -->|browser via web BFF / Bearer JWT| P1
+    KC -->|"code → tokens (web BFF), JWKS"| P1
     P1 -->|cached JWKS| D12
     P1 -->|upsert by keycloak_sub,<br/>sync name, email, role, is_admin| D1
-    P1 -->|session: user id, id_token| D11
+    P1 -->|"tokens (web BFF only)"| D11
     P1 -->|authenticated user| P2
 
     EMP -->|type, dates, day_part, reason,<br/>Idempotency-Key| P2

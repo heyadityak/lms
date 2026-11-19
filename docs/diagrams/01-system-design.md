@@ -2,7 +2,7 @@
 
 How the white-label LMS fits together at runtime and how it is shipped. Sources: [SYSTEM_DESIGN.md](../SYSTEM_DESIGN.md) §1–3, §8–11, §13 and ADRs D-01, D-09, D-14, D-15, D-20…D-27 in [decisions.md](../../.logs/decisions.md).
 
-> Runtime choices shown here: FrankenPHP + Octane app replicas behind NGINX (D-27), Redis 7 for sessions/cache/locks/rate limits/queue (D-23), RustFS (S3-compatible) object storage and first-class horizontal scaling (D-24), Keycloak identity on the upstream image (D-20, D-22, D-29, D-33), CI/GHCR (D-25).
+> Runtime choices shown here: Next.js frontend + BFF (`web`) and API-only Laravel on one origin behind NGINX (D-43), FrankenPHP + Octane app replicas (D-27), Redis 7 for sessions/cache/locks/rate limits/queue (D-23), RustFS (S3-compatible) object storage and first-class horizontal scaling (D-24), Keycloak identity on the upstream image (D-20, D-22, D-29, D-33), CI/GHCR (D-25).
 
 C4 notation is drawn with flowcharts, because Mermaid's `C4Context` is experimental and lays out poorly on GitHub. Shapes: person = stadium, container = rectangle, data store = cylinder, external system = dashed border.
 
@@ -17,13 +17,13 @@ flowchart TB
     api([API client<br/>mobile app / script])
     op([Vendor / operator<br/>env: licensed modules,<br/>brand defaults, secrets])
 
-    lms["<b>Leave Management System</b><br/>white-label, single-tenant<br/>Laravel 12 / FrankenPHP + Octane, PHP 8.4"]
+    lms["<b>Leave Management System</b><br/>white-label, single-tenant<br/>Next.js frontend + BFF (web)<br/>Laravel 12 API / FrankenPHP + Octane, PHP 8.4"]
 
     kc["Keycloak 26<br/>realm lms: login, MFA,<br/>realm roles = RBAC authority"]:::ext
     dir["Customer directory<br/>LDAP / AD, SAML, Entra ID"]:::ext
     smtp["SMTP relay<br/>(Mailpit in dev)"]:::ext
     s3["RustFS (S3-compatible)<br/>prod: any S3-compatible store<br/>logo + favicon"]:::ext
-    ghcr["GHCR<br/>ghcr.io/heyadityak/lms/app, /nginx"]:::ext
+    ghcr["GHCR<br/>ghcr.io/heyadityak/lms/app, /nginx, /web"]:::ext
 
     emp -->|apply, cancel, view balances| lms
     mgr -->|approve / reject reports' requests| lms
@@ -32,7 +32,7 @@ flowchart TB
     api -->|/api/v1 JSON, Bearer JWT| lms
     emp & mgr & hr & adm -->|sign in OIDC| kc
     api -->|auth code + PKCE<br/>client lms-api-cli| kc
-    lms -->|OIDC code exchange, JWKS,<br/>Admin REST API as lms-admin| kc
+    lms -->|"BFF: OIDC code exchange + refresh (lms-web)<br/>API: JWKS, Admin REST API as lms-admin"| kc
     kc -->|federation / brokering| dir
     op -->|deploys image + env per customer| lms
     lms -->|queued notification mails| smtp
@@ -47,19 +47,20 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    browser([Browser]) -->|HTTPS| lb
+    browser([Browser]) -->|HTTPS, encrypted session cookie| lb
     client([API client]) -->|HTTPS Bearer JWT| lb
 
     subgraph dep["Customer deployment (one per customer, D-01)"]
         lb["Ingress / load balancer<br/>TLS, HSTS<br/>no sticky sessions"]
-        nginx["nginx × N (edge)<br/>nginx:stable-alpine<br/>static assets, security headers,<br/>HTTP proxy_pass, X-Request-Id"]
-        app["app × N<br/>FrankenPHP + Octane worker mode :8000<br/>routes, middleware, controllers,<br/>actions, policies, Blade, /api/v1"]
+        nginx["nginx × N (edge)<br/>nginx:stable-alpine<br/>path routing, security headers,<br/>HTTP proxy_pass, X-Request-Id"]
+        web["web × N<br/>Next.js standalone :3000 (node:24-alpine)<br/>pages (antd), Auth.js /auth/*,<br/>BFF /bff/api/* → /api/v1"]
+        app["app × N<br/>FrankenPHP + Octane worker mode :8000<br/>API only: /api/v1, middleware,<br/>actions, policies, Resources"]
         worker["worker × N<br/>queue:work redis"]
         sched["scheduler × 1<br/>schedule:work<br/>onOneServer + withoutOverlapping"]
         oneoff["one-off job<br/>migrate --force<br/>lms:accrue-year"]
         kc["keycloak × N<br/>Keycloak 26, realm lms<br/>clients lms-web, lms-api-cli, lms-admin"]
         pg[("PostgreSQL 17<br/>db lms: domain tables, settings,<br/>user_admin_audits, failed_jobs<br/>db keycloak: Keycloak tables")]
-        redis[("Redis 7<br/>sessions, cache, JWKS, admin token,<br/>locks, rate limits, idempotency, queue")]
+        redis[("Redis 7<br/>cache, JWKS, admin token,<br/>locks, rate limits, idempotency, queue")]
     end
 
     s3[("RustFS (S3-compatible)<br/>BRANDING_DISK=s3")]
@@ -67,11 +68,14 @@ flowchart LR
 
     lb --> nginx
     lb -->|/realms/*| kc
-    nginx -->|"HTTP proxy_pass (APP_UPSTREAM app:8000)"| app
+    nginx -->|"/ (WEB_UPSTREAM web:3000)"| web
+    nginx -->|"/api/, /healthz, /readyz, /branding/<br/>(APP_UPSTREAM app:8000)"| app
+    web -->|"Bearer JWT via LMS_API_URL (http://nginx)"| nginx
+    web -->|"token exchange, refresh<br/>(KEYCLOAK_BASE_URL)"| kc
     app -->|SQL| pg
-    app -->|"session, cache, throttle, jobs"| redis
+    app -->|"cache, throttle, jobs"| redis
     app -->|"put / stream logo, favicon"| s3
-    app -->|"token exchange, JWKS, Admin REST<br/>(KEYCLOAK_INTERNAL_URL)"| kc
+    app -->|"JWKS, Admin REST<br/>(KEYCLOAK_BASE_URL)"| kc
     kc -->|JDBC| pg
     kc -->|SMTP| smtp
     worker -->|pop jobs| redis
@@ -83,11 +87,12 @@ flowchart LR
 ```
 
 Notes:
-- Every PHP process runs the **same `app` image** (FrankenPHP, D-09/D-27) with a different command: web = `php artisan octane:frankenphp` on `:8000` (or classic FrankenPHP with `APP_SERVER_MODE=classic`), worker = `queue:work`, scheduler = `schedule:work`, one-off = `migrate`. `nginx` and `keycloak` are separate images.
+- `web` is the Next.js frontend and BFF (D-43): browsers only talk to `web` (pages, `/auth/*`, `/bff/*`) and to `/branding/*` assets; tokens stay in `web`'s encrypted session cookie and are attached server-side when the BFF calls `/api/v1` back through nginx. Third-party API clients call `/api/v1` directly.
+- Every PHP process runs the **same `app` image** (FrankenPHP, D-09/D-27) with a different command: web = `php artisan octane:frankenphp` on `:8000` (or classic FrankenPHP with `APP_SERVER_MODE=classic`), worker = `queue:work`, scheduler = `schedule:work`, one-off = `migrate`. `nginx`, `web` and `keycloak` are separate images.
 - NGINX is the edge reverse proxy: TLS in prod (or the platform LB), static files, security headers, `proxy_pass` over HTTP. FrankenPHP's own auto-HTTPS is off (`SERVER_NAME=:8000`).
-- `app` and `worker` are stateless: no local sessions, uploads or cache. Any replica serves any request, so no sticky sessions.
-- Keycloak uses its own `keycloak` database on the same Postgres server (D-20). The browser reaches it at `KEYCLOAK_BASE_URL` (issuer); the app uses `KEYCLOAK_INTERNAL_URL` for back-channel calls.
-- Health: nginx `/nginx-health`; app (served by Octane, image `HEALTHCHECK` curls `:8000/healthz`) `/healthz` (no I/O) and `/readyz` (Postgres + Redis, **not** Keycloak, to avoid cascading restarts); Keycloak `/health/ready`.
+- `web`, `app` and `worker` are stateless: no server sessions (the web session is an encrypted cookie), no local uploads or cache. Any replica serves any request, so no sticky sessions.
+- Keycloak uses its own `keycloak` database on the same Postgres server (D-20). The browser reaches it at `KEYCLOAK_PUBLIC_URL` (issuer); `web` and `app` use `KEYCLOAK_BASE_URL` for back-channel calls.
+- Health: nginx `/nginx-health`; web `:3000/bff/healthz` (no I/O); app (served by Octane, image `HEALTHCHECK` curls `:8000/healthz`) `/healthz` (no I/O) and `/readyz` (Postgres + Redis, **not** Keycloak, to avoid cascading restarts); Keycloak `/health/ready`.
 
 ## 3. Deployment view: build once, deploy per customer
 
@@ -95,15 +100,15 @@ Notes:
 flowchart LR
     subgraph gh["GitHub"]
         repo["repo heyadityak/lms<br/>main / v* tag"] --> ci["Actions ci.yml<br/>lint, openapi lint, unit,<br/>feature (Postgres 17 + Redis 7 services,<br/>OpenAPI response validation),<br/>compose smoke test"]
-        ci -->|all green| pkg["package job<br/>buildx app-prod (FrankenPHP) + nginx<br/>amd64 on main, +arm64 on v* tags"]
+        ci -->|all green| pkg["package job<br/>buildx app-prod (FrankenPHP) + nginx + web (Next)<br/>smoke incl. Playwright e2e<br/>amd64 on main, +arm64 on v* tags"]
     end
-    pkg -->|push :sha :semver :main| ghcr[("GHCR<br/>ghcr.io/heyadityak/lms/app<br/>ghcr.io/heyadityak/lms/nginx")]
+    pkg -->|push :sha :semver :main| ghcr[("GHCR<br/>ghcr.io/heyadityak/lms/app<br/>ghcr.io/heyadityak/lms/nginx<br/>ghcr.io/heyadityak/lms/web")]
 
     subgraph custA["Customer A (own namespace / VM)"]
         envA["env: APP_BRAND_NAME=Acme Leave<br/>BRAND_PRIMARY_COLOR, BRAND_ACCENT_COLOR<br/>MODULES_ENABLED=holidays,reports,notifications,user_management<br/>LEAVE_YEAR_START_MONTH=4<br/>KEYCLOAK_BASE_URL=https://sso.acme.example<br/>BRANDING_DISK=s3, AWS_ENDPOINT, AWS_BUCKET"]
-        secA["secrets: APP_KEY, DB_PASSWORD, REDIS_PASSWORD,<br/>MAIL_PASSWORD, AWS_SECRET_ACCESS_KEY,<br/>KEYCLOAK_CLIENT_SECRET, KEYCLOAK_ADMIN_CLIENT_SECRET,<br/>KC_DB_PASSWORD"]
-        relA["release: migrate --force (one-off)<br/>then roll app / worker / scheduler"]
-        runA["nginx + app×N (FrankenPHP) + worker×N + scheduler×1"]
+        secA["secrets: APP_KEY, DB_PASSWORD, REDIS_PASSWORD,<br/>MAIL_PASSWORD, AWS_SECRET_ACCESS_KEY,<br/>KEYCLOAK_ADMIN_CLIENT_SECRET, KC_DB_PASSWORD<br/>web: AUTH_SECRET, AUTH_KEYCLOAK_SECRET"]
+        relA["release: migrate --force (one-off)<br/>then roll app / web / worker / scheduler"]
+        runA["nginx + web×N (Next) + app×N (FrankenPHP)<br/>+ worker×N + scheduler×1"]
         kcA["Keycloak cluster A<br/>upstream image, realm lms imported"]
         dbA[("Postgres A<br/>lms + keycloak")]
         rA[("Redis A")]
@@ -121,7 +126,7 @@ flowchart LR
     subgraph custB["Customer B (AD-managed users)"]
         envB["env: APP_BRAND_NAME=Globex HR<br/>MODULES_ENABLED=holidays,reports,api,notifications<br/>(user_management off: users come from AD)<br/>LEAVE_YEAR_START_MONTH=1"]
         secB["secrets (own values)"]
-        runB["nginx + app×N (FrankenPHP) + worker×N + scheduler×1"]
+        runB["nginx + web×N (Next) + app×N (FrankenPHP)<br/>+ worker×N + scheduler×1"]
         kcB["Keycloak cluster B<br/>LDAP federation to Globex AD"]
         dbB[("Postgres B")]
         rB[("Redis B")]
@@ -142,7 +147,7 @@ flowchart LR
 ```
 
 Notes:
-- **Build, release, run** (12-factor V): one immutable image per commit. Release = image digest + that customer's env. `config:cache`, `route:cache`, `view:cache` run in the entrypoint at container start.
+- **Build, release, run** (12-factor V): one immutable image per role per commit (`app`, `nginx`, `web`); the `web` image bakes in no deployment config (no `NEXT_PUBLIC_*`, D-43). Release = image digest + that customer's env. `config:cache`, `route:cache`, `view:cache` run in the entrypoint at container start.
 - Env holds **defaults and the licensed ceiling** (D-14). Admin overrides (brand, disabled modules) are rows in that customer's `settings` table.
 - Secrets come from the orchestrator (Kubernetes Secret, Docker secret, cloud secret manager) as env vars. Never in the image, never committed.
 - Nothing is shared between customers: separate Postgres, Redis, Keycloak and bucket (D-01).
@@ -158,14 +163,17 @@ flowchart TB
     lb -->|/realms/*| kc1["keycloak #1"]
     lb -->|/realms/*| kc2["keycloak #N"]
     kc1 <-->|"Infinispan cluster (KC_CACHE=ispn)"| kc2
-    n1 -->|HTTP :8000| a1["app #1<br/>FrankenPHP + Octane"]
-    n1 -->|HTTP :8000| a2["app #2"]
-    n2 -->|HTTP :8000| a2
-    n2 -->|HTTP :8000| a3["app #N"]
+    n1 & n2 -->|"/ :3000"| wb1["web #1<br/>Next.js + BFF"]
+    n1 & n2 -->|"/ :3000"| wb2["web #N"]
+    wb1 & wb2 -.->|"/api/v1 + Bearer, back through nginx"| n1
+    n1 -->|"/api/ :8000"| a1["app #1<br/>FrankenPHP + Octane"]
+    n1 -->|"/api/ :8000"| a2["app #2"]
+    n2 -->|"/api/ :8000"| a2
+    n2 -->|"/api/ :8000"| a3["app #N"]
 
     subgraph shared["Shared state (the only stateful tier)"]
         pg[("Postgres 17<br/>lms + keycloak DBs")]
-        redis[("Redis 7<br/>session · cache · JWKS · locks ·<br/>throttle · idempotency · queue")]
+        redis[("Redis 7<br/>cache · JWKS · locks ·<br/>throttle · idempotency · queue")]
         s3[("RustFS (S3-compatible)<br/>branding assets")]
     end
 
@@ -186,8 +194,9 @@ flowchart TB
 
 | Tier | Scale | Why it is safe |
 |---|---|---|
-| nginx | N | Stateless edge proxy to `APP_UPSTREAM` over HTTP (no FastCGI), re-resolved via `NGINX_RESOLVER`. |
-| app (FrankenPHP + Octane) | N (CPU / latency); `OCTANE_WORKERS` per replica, recycled after `OCTANE_MAX_REQUESTS` | Sessions, cache, JWKS, admin token, idempotency keys in Redis; uploads on RustFS. `Settings` cache invalidated in Redis, so every replica sees changes on the next request. |
+| nginx | N | Stateless edge proxy to `WEB_UPSTREAM` and `APP_UPSTREAM` over HTTP (no FastCGI), re-resolved via `NGINX_RESOLVER`. |
+| web (Next.js + BFF) | N (CPU / SSR latency) | Session is the encrypted cookie (shared `AUTH_SECRET`), no server state; per-replica fetch cache holds only public branding (≤ 30 s). |
+| app (FrankenPHP + Octane) | N (CPU / latency); `OCTANE_WORKERS` per replica, recycled after `OCTANE_MAX_REQUESTS` | Bearer-only (no sessions); cache, JWKS, admin token, idempotency keys in Redis; uploads on RustFS. `Settings` cache invalidated in Redis, so every replica sees changes on the next request. |
 | worker | N (queue depth) | Redis queue pop is atomic. SIGTERM finishes the current job. |
 | scheduler | 1 (extra replicas harmless) | `onOneServer()` takes a Redis atomic lock per run; `withoutOverlapping()` stops a long accrual overlapping itself. Accrual is idempotent anyway (unique ledger index). |
 | keycloak | N | Clustered (Infinispan) with shared `keycloak` DB. The app keeps validating JWTs from the Redis-cached JWKS during short Keycloak outages. |

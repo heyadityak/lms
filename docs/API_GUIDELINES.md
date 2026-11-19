@@ -1,18 +1,19 @@
 # LMS — API guidelines
 
-Status: v1 (architect, 2026-11-19). Decision D-21. The contract is [`docs/api/openapi.yaml`](api/openapi.yaml) (OpenAPI 3.1). **The spec is the source of truth.** If the code and the spec disagree, the code is wrong. Change the spec first (architect/coordinator), then the code.
+Status: v1.1 (architect, 2026-11-19). Decisions D-21, D-43 (Next.js frontend via BFF, Laravel API-only). The contract is [`docs/api/openapi.yaml`](api/openapi.yaml) (OpenAPI 3.1). **The spec is the source of truth.** If the code and the spec disagree, the code is wrong. Change the spec first (architect/coordinator), then the code.
 
 Who uses this file:
 - **domain** implements `/api/v1` routes, API Resources, status codes and problem `code`s exactly as specified.
 - **qa** validates every API feature-test response against `openapi.yaml` with `osteel/openapi-httpfoundation-testing` (dev dependency).
 - **platform** serves Swagger UI / Redoc for the spec at `/api/docs` when the `api` module is enabled (404 otherwise).
+- **frontend** generates its types from the spec (`openapi-typescript` → `web/src/lib/api/schema.d.ts`, CI fails when stale) and calls the API only through `openapi-fetch` (D-43).
 
 ## 1. Basics
 
 | Topic | Rule |
 |---|---|
 | Base URL | `{APP_URL}/api/v1`. Major version in the URI. Breaking change ⇒ `/api/v2` alongside v1. Additive changes (new fields, endpoints, enum values documented as extensible) stay in v1. |
-| Module gate | Every `/api/v1/*` route (and `/api/docs`) has `module:api`. Off ⇒ `404 application/problem+json`, code `NOT_FOUND`. Feature modules add their own gate (`holidays`, `reports`) with the same 404. |
+| Module gate | `module:api` gates **third-party** access: every `/api/v1/*` route and `/api/docs` answer `404 application/problem+json` (`NOT_FOUND`) when `api` is off, **except** requests whose Bearer token `azp` is `KEYCLOAK_CLIENT_ID` (`lms-web`, the first-party BFF) and the public `GET /api/v1/branding` (D-43). The middleware only peeks at the unverified `azp` to pick 404 vs continue; the guard verifies the token afterwards. Feature modules add their own gate (`holidays`, `reports`, `user_management`) with the same 404 for every caller. |
 | Resources | Plural, kebab-case nouns: `/leave-requests`, `/leave-types`, `/ledger-entries`. Nested only for ownership (`/users/{id}/balances`). |
 | Current user | `/me`, `/me/balances`, `/me/leave-requests`, `/me/ledger-entries`. Clients never need their own id. |
 | State transitions | Sub-resource actions with `POST`: `/leave-requests/{id}/approve`, `/reject`, `/cancel`; `/users/{id}/deactivate`, `/activate`. Never `PATCH status`. |
@@ -121,6 +122,21 @@ Every 4xx/5xx from `/api/v1` is `application/problem+json`:
 
 ## 5. Authentication and authorization
 
+### 5.1 First-party frontend (BFF, D-43)
+
+The Next.js frontend (`web` container, same origin) is the only browser client. It never gives tokens to the browser:
+
+| Step | Rule |
+|---|---|
+| Sign-in | Auth.js (`basePath: /auth`) runs the auth code + PKCE flow with the confidential client `lms-web`; tokens are kept in the encrypted, HttpOnly, SameSite=Lax session cookie. |
+| Calls | Browser → `/bff/api/{path}` (same origin, cookie) → BFF route handler → `{LMS_API_URL}/api/v1/{path}` with `Authorization: Bearer`. Same paths as this spec, so one `openapi-fetch` client works with base URL `/bff/api` (browser) or `{LMS_API_URL}/api/v1` (server components). |
+| Forwarded | Request: `Accept`, `Content-Type`, `Idempotency-Key`, `X-Forwarded-For/-Proto/-Host`, body streamed. Never `Cookie`. Response: status + body unchanged, headers `Content-Type`, `Content-Disposition`, `Location`, `Retry-After`, `X-RateLimit-*`, `Idempotent-Replayed`, `X-Request-Id`, `WWW-Authenticate`. |
+| No/expired session | BFF answers `401 application/problem+json` `UNAUTHENTICATED` (same `Problem` shape). A Laravel 401 also clears the session cookie; the client restarts sign-in. |
+| CSRF | `POST/PUT/PATCH/DELETE` to `/bff/*` need `Origin` = the `APP_URL` origin, else `403` `FORBIDDEN`. |
+| URLs in bodies | `links`, `Location`, `logo_url` are absolute `APP_URL` URLs (`/api/v1/...`); the frontend paginates with `meta`, not `links`. |
+
+### 5.2 Bearer tokens
+
 - OAuth 2.0 / OIDC with **Keycloak** (D-20). Clients get an access token from Keycloak (client `lms-api-cli`, auth code + PKCE; discovery at `{KEYCLOAK_PUBLIC_URL}/realms/lms/.well-known/openid-configuration`) and send `Authorization: Bearer <jwt>`. The app has no token endpoints.
 - The guard checks RS256 signature (JWKS cached in Redis), `iss` (`{KEYCLOAK_PUBLIC_URL}/realms/lms`), `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES` (`lms-web,lms-api-cli`), `exp`/`nbf` with `KEYCLOAK_JWT_LEEWAY`. User is provisioned/synced from claims on every call.
 - Each operation in the spec has `x-roles` (realm roles allowed to call it at all). Every user has exactly one base role (`employee`, `manager`, `hr_admin`); `admin` is an additional realm role for branding, modules and identity admin (D-29). Fine-grained rules (direct manager, not own request) are Policies and give **403**.
@@ -147,7 +163,7 @@ Implemented as middleware `idempotent` (`App\Http\Middleware\EnsureIdempotency`)
 
 ## 8. Rate limiting
 
-Redis-backed `RateLimiter::for('api')`: 60 requests/min per user (by JWT `sub`), or per IP when unauthenticated. Every response carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`; `429` adds `Retry-After` (seconds) and `X-RateLimit-Reset`.
+Redis-backed `RateLimiter::for('api')`: 60 requests/min per user (by JWT `sub`), or per IP when unauthenticated. The BFF does not change this: limits stay per user. `RateLimiter::for('public')` (`GET /branding`): 300/min per client IP (from `X-Forwarded-For`, trusted proxies = nginx and web networks). Every response carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`; `429` adds `Retry-After` (seconds) and `X-RateLimit-Reset`.
 
 ## 9. Identity admin (`/admin/users`, D-22)
 
@@ -163,8 +179,8 @@ Redis-backed `RateLimiter::for('api')`: 60 requests/min per user (by JWT `sub`),
 ## 10. Other conventions
 
 - `X-Request-Id` accepted (or generated by nginx) and echoed on every response.
-- Caching: `Cache-Control: no-store` on authenticated responses. `ETag` only on `/branding/*` assets.
-- CORS: off by default; enable per deployment via env for known origins only.
+- Caching: `Cache-Control: no-store` on authenticated responses. `GET /api/v1/branding` is `public, max-age=30`. `ETag` only on `/branding/*` assets.
+- CORS: off. The frontend is same-origin (NGINX routes `/` to `web`, `/api/` to `app`), and third-party clients are not browsers. Enable per deployment via env for known origins only if a customer needs it.
 - Deprecation: `Deprecation` + `Sunset` headers on endpoints scheduled for removal in the next major.
 - Health checks (`/healthz`, `/readyz`) are outside `/api/v1`, unauthenticated, and not wrapped in the envelope.
 - Lint the spec before merging: `docker run --rm -v "$PWD":/work redocly/cli lint /work/docs/api/openapi.yaml`. Expected result: valid, with 2 accepted warnings (`operation-4xx-response` on `/healthz` and `/readyz`, which have no 4xx by design).

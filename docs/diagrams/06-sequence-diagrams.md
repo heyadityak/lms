@@ -1,78 +1,85 @@
 # 06 — Sequence diagrams
 
-Runtime interactions. `App` is a FrankenPHP replica running Laravel Octane in worker mode on `:8000` (D-27); NGINX proxies to it over plain HTTP (no FastCGI). Redis logical DBs follow D-23 (cache 1, session 2, queue 3). Keycloak details follow D-20/D-22; API conventions follow [API_GUIDELINES.md](../API_GUIDELINES.md).
+Runtime interactions. `Web` is a Next.js replica (pages + Auth.js + BFF, D-43); browsers never hold Keycloak tokens. `App` is an API-only FrankenPHP replica running Laravel Octane in worker mode on `:8000` (D-27); NGINX proxies to it over plain HTTP (no FastCGI). Redis logical DBs follow D-23 (cache 1, queue 3; no sessions since D-43). Keycloak details follow D-20/D-22; API conventions follow [API_GUIDELINES.md](../API_GUIDELINES.md).
 
 | # | Flow |
 |---|---|
-| 1 | Web login (OIDC auth code + PKCE, provisioning, Redis session) |
-| 2 | RP-initiated logout |
+| 1 | Web login via the Next.js BFF (OIDC auth code + PKCE, encrypted session cookie, provisioning on the first API call) |
+| 2 | RP-initiated logout via the BFF |
 | 3 | API call with a Keycloak Bearer JWT (JWKS cached in Redis) |
-| 4 | Apply for leave (web), queue, worker, mail |
+| 4 | Apply for leave: Browser → NGINX → Next BFF → NGINX → app, queue, worker, mail |
 | 5 | Approve leave |
 | 6 | Cancel approved leave with ledger refund |
 | 7 | Scheduled year-start accrual (Redis lock, idempotent) |
 | 8 | `/readyz` health check |
-| 9 | Logo upload to RustFS + theme render via CSS variables |
+| 9 | Logo upload through the BFF to RustFS + theme render in Next (antd tokens) |
 | 10 | API error handling and `Idempotency-Key` |
 | 11 | Admin creates a user (Keycloak first, compensation on failure) |
 
-## 1. Web login: OIDC authorization code flow
+## 1. Web login via the Next.js BFF (OIDC authorization code + PKCE)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User (browser)
     participant N as NGINX
-    participant A as App (FrankenPHP / Octane)
-    participant R as Redis (session DB 2, cache DB 1)
+    participant W as Web (Next.js + Auth.js)
     participant K as Keycloak (realm lms)
+    participant A as App (FrankenPHP / Octane, API only)
     participant DB as Postgres
 
-    U->>N: GET /login
-    N->>A: proxy_pass HTTP :8000
-    A->>A: Socialite keycloak driver: state + PKCE verifier
-    A->>R: store state, code_verifier in new session
-    A-->>U: 302 to KEYCLOAK_PUBLIC_URL/realms/lms/protocol/openid-connect/auth
-    U->>K: login page (customer-configured upstream Keycloak, LDAP / AD / SAML broker possible)
-    K-->>U: 302 /auth/callback?code=…&state=…
-    U->>N: GET /auth/callback
+    U->>N: GET / (no session cookie)
+    N->>W: proxy_pass / → web:3000
+    W->>N: GET /api/v1/branding (server side, cached 30 s)
+    N->>A: proxy_pass /api/ → app:8000
+    A-->>W: brand + enabled modules (public)
+    W-->>U: sign-in page themed with brand tokens
+    U->>N: POST /auth/signin/keycloak (Auth.js CSRF token)
+    N->>W: proxy_pass
+    W->>W: state + PKCE verifier in short-lived encrypted cookies
+    W-->>U: 302 KEYCLOAK_PUBLIC_URL/realms/lms/protocol/openid-connect/auth (client lms-web, S256)
+    U->>K: login page (customer upstream Keycloak, LDAP / AD / SAML broker possible)
+    K-->>U: 302 APP_URL/auth/callback/keycloak?code=…&state=…
+    U->>N: GET /auth/callback/keycloak
+    N->>W: proxy_pass
+    W->>W: check state, load verifier
+    W->>K: POST token endpoint via KEYCLOAK_BASE_URL (code, verifier, lms-web secret)
+    K-->>W: access_token, refresh_token, id_token
+    W-->>U: 302 / + Set-Cookie session (JWE: tokens + expires_at, HttpOnly, Secure, SameSite=Lax)
+    U->>N: GET / (session cookie)
+    N->>W: proxy_pass
+    W->>N: GET /api/v1/me, Authorization Bearer (server component)
     N->>A: proxy_pass
-    A->>R: load session, compare state
-    A->>K: POST token endpoint via KEYCLOAK_BASE_URL (code, verifier, lms-web secret)
-    K-->>A: id_token, access_token, refresh_token
-    A->>R: JwksCache get keycloak:jwks (fetch certs on miss or unknown kid)
-    A->>A: verify RS256, iss, aud/azp, exp with leeway
-    A->>DB: KeycloakUserProvisioner: find by keycloak_sub, else link by verified email, else insert
-    A->>DB: sync name, email, role (highest LMS realm role), last_login_at
-    alt no LMS realm role or user inactive
-        A-->>U: 403 access denied page (no session created)
+    A->>A: module:api passes (azp = lms-web), KeycloakJwtGuard verifies RS256, iss, azp, exp
+    A->>DB: KeycloakUserProvisioner: find by keycloak_sub, else link by verified email, else insert, then sync role, is_admin
+    alt no base role / inactive
+        A-->>W: 403 / 401 problem+json
+        W-->>U: access-denied page, session cookie cleared
     else ok
-        A->>A: Auth::login(user), session()->regenerate()
-        A->>R: write session (user id, id_token for logout), new id
-        A-->>U: 302 / with session cookie (Secure, HttpOnly, SameSite=Lax)
+        A-->>W: 200 user
+        W-->>U: dashboard HTML (antd, role- and module-aware nav)
     end
-    Note over A,R: No sticky sessions: any replica can serve the next request because the session lives in Redis.
+    Note over W: Stateless: any web replica decrypts the cookie with the shared AUTH_SECRET. No sticky sessions, no session store.
 ```
 
-## 2. RP-initiated logout
+## 2. RP-initiated logout via the BFF
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User (browser)
     participant N as NGINX
-    participant A as App (FrankenPHP / Octane)
-    participant R as Redis (session)
+    participant W as Web (Next.js BFF)
     participant K as Keycloak
 
-    U->>N: POST /logout (CSRF token)
-    N->>A: proxy_pass
-    A->>R: read id_token from session
-    A->>R: invalidate session, regenerate CSRF token
-    A-->>U: 302 KEYCLOAK_PUBLIC_URL/…/logout?id_token_hint=…&post_logout_redirect_uri=APP_URL
+    U->>N: POST /bff/logout (session cookie, Origin header)
+    N->>W: proxy_pass
+    W->>W: Origin = APP_URL origin? else 403
+    W->>W: read id_token from session, clear session cookie
+    W-->>U: 302 KEYCLOAK_PUBLIC_URL/…/logout?id_token_hint=…&post_logout_redirect_uri=APP_URL/
     U->>K: end-session request
-    K->>K: end SSO session (all clients of this browser)
-    K-->>U: 302 APP_URL (signed-out page)
+    K->>K: end SSO session, revoke refresh tokens
+    K-->>U: 302 APP_URL/ (signed-out, sign-in page)
 ```
 
 ## 3. API call with a Keycloak Bearer JWT
@@ -92,7 +99,7 @@ sequenceDiagram
     K-->>C: access_token (RS256 JWT, 5 min)
     C->>N: GET /api/v1/me/balances, Authorization Bearer
     N->>A: proxy_pass
-    A->>A: middleware module:api (404 problem if off)
+    A->>A: middleware module:api (404 problem if off, but azp = lms-web, the BFF, always passes)
     A->>G: auth:keycloak-jwt
     G->>R: get keycloak:jwks
     alt cache miss or unknown kid
@@ -113,47 +120,48 @@ sequenceDiagram
     end
 ```
 
-## 4. Apply for leave (web), queue and mail
+## 4. Apply for leave: Browser → NGINX → Next BFF → NGINX → app
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor E as Employee (browser)
     participant N as NGINX
+    participant W as Web (Next.js BFF)
+    participant K as Keycloak
     participant A as App (FrankenPHP / Octane)
-    participant MW as Middleware (auth, active, module)
-    participant C as LeaveRequestController
-    participant FR as StoreLeaveRequestRequest
+    participant MW as Middleware (module:api, auth:keycloak-jwt, active, throttle, idempotent)
     participant AC as SubmitLeaveRequest
     participant DB as Postgres
-    participant R as Redis (queue DB 3)
-    participant W as Worker (queue:work)
+    participant R as Redis (cache DB 1, queue DB 3)
+    participant Wk as Worker (queue:work)
     participant M as SMTP
 
-    E->>N: POST /leave-requests (CSRF, form)
-    N->>A: proxy_pass HTTP :8000
-    A->>MW: session from Redis, auth, EnsureUserIsActive
-    MW->>C: store()
-    C->>C: authorize create (LeaveRequestPolicy)
-    C->>FR: validate V9 + shapes
-    FR-->>C: validated data
-    C->>AC: handle(user, data)
-    AC->>DB: BEGIN, SELECT users FOR UPDATE (requester)
-    AC->>DB: load leave type (V1), holidays if module on
-    AC->>AC: V2..V5, WorkingDayCalculator days
-    AC->>DB: V6 overlap query, V7 balance = SUM ledger − pending
-    AC->>AC: V8 ApproverResolver
-    AC->>DB: INSERT leave_requests pending, INSERT leave_request_actions submitted
-    AC->>DB: COMMIT
-    AC->>R: afterCommit dispatch LeaveRequestSubmitted (if notifications on)
-    AC-->>C: LeaveRequest
-    C-->>E: 302 /leave-requests/ID with flash
-    W->>R: pop job
-    W->>DB: load request, approver(s)
-    W->>M: mail "[Brand] Leave request from Alice"
-    alt SMTP fails 3 times
-        W->>DB: INSERT failed_jobs
+    E->>N: POST /bff/api/leave-requests (cookie, Origin, Idempotency-Key, JSON)
+    N->>W: proxy_pass / → web:3000
+    W->>W: Origin check, decrypt session
+    opt access token expires within 60 s
+        W->>K: refresh_token grant (KEYCLOAK_BASE_URL)
+        K-->>W: new access + refresh token (rotated)
     end
+    W->>N: POST LMS_API_URL/api/v1/leave-requests, Authorization Bearer, Idempotency-Key, X-Forwarded-For
+    N->>A: proxy_pass /api/ → app:8000
+    A->>MW: azp = lms-web passes module:api, verify JWT, active, throttle, idempotency slot in R
+    MW->>AC: StoreLeaveRequestRequest validated, policy create
+    AC->>DB: BEGIN, SELECT users FOR UPDATE (requester)
+    AC->>AC: V1..V8, WorkingDayCalculator days
+    AC->>DB: INSERT leave_requests pending + leave_request_actions submitted, COMMIT
+    AC->>R: afterCommit dispatch LeaveRequestSubmitted (if notifications on)
+    alt rule violated
+        A-->>W: 422 problem+json (code, errors)
+    else ok
+        A-->>W: 201 {data} + Location + X-RateLimit-*
+    end
+    W-->>E: same status, body and allow-listed headers (+ Set-Cookie if tokens were refreshed)
+    E->>E: TanStack Query invalidates balances and requests, problem errors mapped to form fields
+    Wk->>R: pop job
+    Wk->>DB: load request, approver(s)
+    Wk->>M: mail "[Brand] Leave request from Alice" with link APP_URL/leave-requests/ID
 ```
 
 ## 5. Approve leave
@@ -271,12 +279,13 @@ sequenceDiagram
     Note over O,A: /healthz is liveness only (no I/O). Keycloak, S3 and SMTP are not checked, so their outages never restart app replicas. The image HEALTHCHECK curls :8000/healthz.
 ```
 
-## 9. Logo upload to RustFS and theme render
+## 9. Logo upload through the BFF and theme render in Next
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor H as Admin (role admin)
+    participant W as Web (Next.js BFF, via NGINX)
     participant A as App (via NGINX)
     participant AC as UpdateBranding
     participant S3 as RustFS (S3-compatible, BRANDING_DISK=s3)
@@ -284,19 +293,24 @@ sequenceDiagram
     participant R as Redis (cache)
     actor V as Any user
 
-    H->>A: PUT /admin/settings/branding (multipart logo, colours)
-    A->>A: UpdateBrandingRequest: hex regex, png/jpg/webp ≤ 1 MB, ≤ 1024 px, no SVG
-    A->>AC: handle(data, logo)
+    H->>W: PUT /bff/api/settings/branding/assets/logo (multipart, Origin)
+    W->>A: PUT /api/v1/settings/branding/assets/logo, Bearer (body streamed)
+    A->>A: policy manageBranding, png/jpg/webp ≤ 1 MB, ≤ 1024 px, no SVG
+    A->>AC: handle(logo)
     AC->>S3: putObject logo-sha1.png (private bucket)
-    AC->>DB: upsert settings brand.logo_path, brand.primary_color
+    AC->>DB: upsert settings brand.logo_path
     AC->>S3: delete previous logo object
-    AC->>R: Cache::forget settings:all
-    A-->>H: 302 settings page
-    V->>A: GET /dashboard
-    A->>R: Settings get (miss → load settings from DB, cache)
-    A->>A: BrandingComposer (per request, scoped): name, colours, contrast, logo URL
-    A-->>V: HTML with style :root --brand-primary, --brand-accent, --brand-primary-contrast
-    V->>A: GET /branding/logo?v=sha1
+    AC->>R: forget settings:all (after commit)
+    A-->>W: 200 {data: Branding}
+    W->>W: revalidateTag('branding') on this replica
+    W-->>H: 200, admin screen re-renders
+    V->>W: GET /dashboard (any web replica)
+    W->>A: GET /api/v1/branding (cached ≤ BRANDING_REVALIDATE_SECONDS per replica)
+    A->>R: Settings get (miss → DB, cache)
+    A-->>W: name, colours, contrast, logo_url, favicon_url, modules
+    W->>W: validate hex, ConfigProvider theme token (cssVar) + generateMetadata title/icon
+    W-->>V: HTML with antd CSS variables, logo img APP_URL/branding/logo?v=sha1
+    V->>A: GET /branding/logo?v=sha1 (NGINX → app)
     A->>S3: stream object
     A-->>V: image, Cache-Control public max-age=300, ETag
 ```

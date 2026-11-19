@@ -383,12 +383,6 @@ Notes:
 classDiagram
     direction LR
 
-    class KeycloakLoginController {
-        <<Web controller (new)>>
-        +redirect() RedirectResponse
-        +callback(Request r) RedirectResponse
-        +logout(Request r) RedirectResponse
-    }
     class KeycloakJwtGuard {
         <<Guard keycloak-jwt (new)>>
         +user() ?User
@@ -469,8 +463,6 @@ classDiagram
         HTTP 422 IDP_READ_ONLY
     }
 
-    KeycloakLoginController --> JwksCache : verify id_token
-    KeycloakLoginController --> KeycloakUserProvisioner
     KeycloakJwtGuard --> JwksCache
     KeycloakJwtGuard --> KeycloakUserProvisioner
     KeycloakAdminClient <|.. HttpKeycloakAdminClient
@@ -512,21 +504,20 @@ classDiagram
     direction LR
 
     class LeaveRequestController {
-        <<Web + Api V1>>
+        <<Api V1>>
         +index()
-        +create()
         +store(StoreLeaveRequestRequest r, SubmitLeaveRequest a)
         +show(LeaveRequest lr)
         +cancel(CancelLeaveRequestRequest r, LeaveRequest lr, CancelLeaveRequest a)
     }
     class ApprovalController {
-        <<Web + Api V1>>
+        <<Api V1>>
         +index()
         +approve(ApproveLeaveRequestRequest r, LeaveRequest lr, ApproveLeaveRequest a)
         +reject(RejectLeaveRequestRequest r, LeaveRequest lr, RejectLeaveRequest a)
     }
     class AdminUserController {
-        <<Web Admin + Api V1 Admin (new)>>
+        <<Api V1 Admin>>
         +index()
         +store(StoreIdentityUserRequest r, CreateUserAction a)
         +show(User u)
@@ -537,24 +528,28 @@ classDiagram
         +passwordReset(User u, SendPasswordResetAction a)
     }
     class BrandingController {
-        <<Web Admin + Api V1>>
-        +edit()
+        <<Api V1>>
+        +show()
         +update(UpdateBrandingRequest r, UpdateBranding a)
         +destroy(string asset)
     }
     class ModuleController {
-        <<Web Admin + Api V1>>
-        +edit()
+        <<Api V1>>
+        +index()
         +update(UpdateModulesRequest r, UpdateModules a)
     }
     class WorkingWeekController {
-        <<Web Admin + Api V1 (new)>>
+        <<Api V1>>
         +show()
         +update(UpdateWorkingWeekRequest r, UpdateWorkingWeek a)
     }
     class BrandingAssetController {
-        <<Web public>>
+        <<public, no auth>>
         +show(string asset) StreamedResponse
+    }
+    class PublicBrandingController {
+        <<Api V1 public, no auth (D-43)>>
+        +__invoke(Settings s, Modules m) JsonResponse
     }
     class HealthController {
         +healthz() JsonResponse
@@ -643,10 +638,6 @@ classDiagram
         <<Notification ShouldQueue>>
         to other party
     }
-    class BrandingComposer {
-        <<View composer>>
-        +compose(View v) shares brand
-    }
     class Brand {
         <<DTO (new)>>
         +string name
@@ -675,27 +666,26 @@ classDiagram
     ModuleController ..> SettingsPolicy
     WorkingWeekController ..> UpdateWorkingWeekRequest
     WorkingWeekController ..> SettingsPolicy
-    BrandingComposer --> Brand
+    PublicBrandingController --> Brand
     LeaveRequestSubmitted ..> Brand : subject prefix
     LeaveRequestDecided ..> Brand
 ```
 
 Notes:
-- Controllers exist as `App\Http\Controllers\Web\…` (Blade) and `App\Http\Controllers\Api\V1\…` (JSON Resources `LeaveRequestResource`, `UserResource`, `IdentityUserResource`, `BalanceResource`, `LedgerEntryResource`, …). Both call the same Actions.
+- Laravel is API-only (D-43): controllers live in `App\Http\Controllers\Api\V1\…` (JSON Resources `LeaveRequestResource`, `UserResource`, `IdentityUserResource`, `BalanceResource`, `LedgerEntryResource`, …) and call the Actions. Pages are in the Next.js frontend (`web/`), which reaches these controllers through its BFF.
 - Admin CRUD controllers for departments, leave types, holidays, adjustments and reports follow the same pattern and are omitted; so are `DepartmentPolicy`, `LeaveTypePolicy`, `HolidayPolicy` (all `hr_admin` for writes).
 - Errors for `api/*` are rendered as `application/problem+json` in `bootstrap/app.php` `withExceptions()`, mapping `InvalidTransition`, `LeaveRuleViolation`, `Idp*` and framework exceptions to the codes in [API_GUIDELINES.md](../API_GUIDELINES.md) §4.
 - No `AccountCreated` notification and no token controller: Keycloak handles account mails and tokens (D-20).
 
 ## Class names the domain agent must adopt
 
-Already named in the docs: `User`, `Department`, `LeaveType`, `Holiday`, `LeaveRequest`, `LeaveRequestAction`, `LeaveLedgerEntry`, `Setting`; enums `Role`, `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module`; `SubmitLeaveRequest`, `ApproveLeaveRequest`, `RejectLeaveRequest`, `CancelLeaveRequest`, `GrantInitialEntitlement`, `RunYearStartAccrual`, `DeactivateUser`, `WorkingDayCalculator`, `LeaveBalanceService`, `Settings`, `Modules`, `AccrueYear`, `InvalidTransition`, `EnsureModuleEnabled`, `EnsureUserIsActive`, `RequestId`, `HealthController`, `BrandingComposer`, `LeaveRequestPolicy`, `UserPolicy`, `DepartmentPolicy`, `LeaveTypePolicy`, `HolidayPolicy`, `SettingsPolicy`, `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled`.
+Already named in the docs: `User`, `Department`, `LeaveType`, `Holiday`, `LeaveRequest`, `LeaveRequestAction`, `LeaveLedgerEntry`, `Setting`; enums `Role`, `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module`; `SubmitLeaveRequest`, `ApproveLeaveRequest`, `RejectLeaveRequest`, `CancelLeaveRequest`, `GrantInitialEntitlement`, `RunYearStartAccrual`, `DeactivateUser`, `WorkingDayCalculator`, `LeaveBalanceService`, `Settings`, `Modules`, `AccrueYear`, `InvalidTransition`, `EnsureModuleEnabled`, `EnsureUserIsActive`, `RequestId`, `HealthController`, `LeaveRequestPolicy`, `UserPolicy`, `DepartmentPolicy`, `LeaveTypePolicy`, `HolidayPolicy`, `SettingsPolicy`, `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled`.
 
 New (introduced by this run, D-20/D-21/D-22):
 
 | Class | Namespace | Purpose |
 |---|---|---|
 | `UserAdminAudit` | `App\Models` | `user_admin_audits` rows (append-only) |
-| `KeycloakLoginController` | `App\Http\Controllers\Web\Auth` | OIDC redirect, callback, RP-initiated logout |
 | `KeycloakJwtGuard`, `JwksCache`, `KeycloakUserProvisioner` | `App\Auth` | Bearer JWT guard `keycloak-jwt`, cached JWKS, first-login provisioning + role sync |
 | `KeycloakAdminClient` (interface), `HttpKeycloakAdminClient` | `App\Support\Keycloak` | Admin REST API wrapper (`lms-admin` service account) |
 | `FakeKeycloakAdminClient` | `Tests\Fakes` | Test double (QA) |
@@ -703,13 +693,14 @@ New (introduced by this run, D-20/D-21/D-22):
 | `UserAdminGuard` | `App\Services` | Guardrails G2–G5 |
 | `IdpConflict`, `IdpUnavailable`, `IdpReadOnly`, `LeaveRuleViolation` | `App\Exceptions` | Map to problem codes |
 | `EnsureIdempotency` | `App\Http\Middleware` (alias `idempotent`) | `Idempotency-Key` handling |
-| `AdminUserController` | `App\Http\Controllers\{Web\Admin,Api\V1\Admin}` | Identity admin endpoints |
+| `AdminUserController` | `App\Http\Controllers\Api\V1\Admin` | Identity admin endpoints |
 | `StoreIdentityUserRequest`, `UpdateIdentityUserRequest`, `SetUserRolesRequest` | `App\Http\Requests` | Form Requests for identity admin |
 | `AdjustBalance` | `App\Actions\Accrual` | UC-H5 `adjustment` ledger row |
 | `UpdateBranding`, `ResetBranding`, `UpdateModules` | `App\Actions\Settings` | UC-B1–B6 |
 | `UpdateWorkingWeek`, `WorkingWeekController`, `UpdateWorkingWeekRequest` | `App\Actions\Settings`, controllers, `App\Http\Requests` | UC-H16 weekend override (D-30) |
 | `ApproverResolver`, `AccrualCalculator` | `App\Services` | Approver resolution; pure accrual maths |
 | `AccrualSummary` | `App\Actions\Accrual` | Return value of `RunYearStartAccrual` |
-| `LeaveYear`, `BrandColor`, `Brand` | `App\Support` | Leave-year maths (`LEAVE_YEAR_START_MONTH`), hex/contrast, view DTO |
-| `LeaveRequestController`, `ApprovalController`, `BrandingController`, `ModuleController`, `BrandingAssetController` | `App\Http\Controllers\{Web,Web\Admin,Api\V1}` | Controllers |
+| `LeaveYear`, `BrandColor`, `Brand` | `App\Support` | Leave-year maths (`LEAVE_YEAR_START_MONTH`), hex/contrast, brand DTO (public branding + mail) |
+| `LeaveRequestController`, `ApprovalController`, `BrandingController`, `ModuleController`, `PublicBrandingController` | `App\Http\Controllers\Api\V1` | Controllers (D-43: no Web controllers) |
+| `BrandingAssetController` | `App\Http\Controllers` | `/branding/{asset}` (default asset when not overridden) |
 | `StoreLeaveRequestRequest`, `ApproveLeaveRequestRequest`, `RejectLeaveRequestRequest`, `CancelLeaveRequestRequest`, `UpdateBrandingRequest`, `UpdateModulesRequest` | `App\Http\Requests` | Form Requests |

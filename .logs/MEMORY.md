@@ -14,6 +14,8 @@ Read this first, then `decisions.md`, then the docs it points to.
 - 2026-11-19 (phase 4): API plumbing done: problem+json (spec UPPERCASE codes), `EnsureIdempotency`, cache/Redis `throttle:api`, module-before-auth order, `/api/docs` (Redoc + SRI), Octane log passthrough fixed; 66 tests green, live stack verified (D-40). Domain seam: `EnsureModuleEnabled` → `Modules` service in phase 5.
 - 2026-11-19 (phase 5): Schema done (9 domain migrations incl. btree_gist EXCLUDE, partial uniques, CHECKs), enums/models/factories, LeaveTypeSeeder + DemoSeeder (alice/bob/carol/dave), scoped `Settings`/`Modules`, `@module`, `BrandingComposer` + base layout; 82 tests green incl. Octane FakeWorker isolation (D-41).
 - 2026-11-19 (phase 6): Leave core done: WorkingDayCalculator/LeaveBalanceService/ApproverResolver, Submit/Approve/Reject/Cancel (row locks, 23P01 backstop, ledger debit/reversal), LeaveRequestPolicy, `/api/v1` me/balances/leave-requests/approvals/leave-types/holidays, Blade dashboard/apply/my requests/approvals/holidays, `active` middleware, provisioner last_login_at + prorated initial grant; 110 tests green, live API + web flow verified (D-42).
+- 2026-11-19 (phase 7): QA done: 164 tests green, 8 known bugs open (`task test:known-bugs`), see phase-7 log "Bugs found" for domain (D-44).
+- 2026-11-19 (D-43): **Redesign: Next.js frontend (`web/`, antd v5, Auth.js BFF, Figma "Employee Leave Management") + API-only Laravel.** New endpoints `GET /api/v1/branding` (public) and `POST /api/v1/leave-requests/preview`. BUILD_PLAN phases 8–17 rewritten. Open user decisions: Auth.js beta, antd v5 vs v6, Figma license.
 
 ## Run logs
 | Date | Agent | File | Summary |
@@ -28,7 +30,9 @@ Read this first, then `decisions.md`, then the docs it points to.
 | 2026-11-19 | platform | [2026-11-19-phase4-platform.md](2026-11-19-phase4-platform.md) | Phase 4: problem+json renderer (spec codes), DomainException + LeaveRuleViolation/InvalidTransition/Idp*, EnsureIdempotency, throttle headers, module 404 before auth, /api/docs + spec, Octane raw log passthrough; 66 tests green, live curl through nginx (D-40). |
 | 2026-11-19 | domain | [2026-11-19-phase5-domain.md](2026-11-19-phase5-domain.md) | Phase 5: domain schema + constraints, enums/models/factories, seeders, Settings/Modules/branding foundation, `@module`, layout; 82 tests green, live override verified (D-41). |
 | 2026-11-19 | domain | [2026-11-19-phase6-domain.md](2026-11-19-phase6-domain.md) | Phase 6: leave core (services, 4 actions, policy, API per spec, minimal web UI, `active`, provisioner leftovers); 110 tests green, live alice→bob flow verified (D-42). |
+| 2026-11-19 | architect | [2026-11-19-architect-frontend.md](2026-11-19-architect-frontend.md) | D-43: Next.js + BFF, Laravel API-only, antd + Figma UI_GUIDELINES, public branding + leave preview endpoints, docs/diagrams/AGENTS/BUILD_PLAN updated; spec + Mermaid validated. |
 | 2026-11-19 | platform | [2026-11-19-phase3-platform.md](2026-11-19-phase3-platform.md) | Phase 3: Keycloak realm, web OIDC login + RP logout, JWT guard `keycloak-jwt` + JWKS cache (rate-limited refetch), provisioning/role sync, users identity-column migration; live stack verified (scale app=3, Admin API create/delete); 50 tests green (D-39). |
+| 2026-11-19 | qa | [2026-11-19-phase7-qa.md](2026-11-19-phase7-qa.md) | Phase 7: 54 new tests (rules edges, full 409 matrix, RBAC, openapi contract incl. errors/pagination, real idempotency, process-based races, Octane identity, JWT/DOJ probes); 164 green + 8 known-bug excluded; Redis test DBs 10–13 (D-44). |
 
 ## Open questions (awaiting user)
 1. ~~Leave year~~ Resolved by D-26 (`LEAVE_YEAR_START_MONTH`, default 1). Confirm env-only (not admin-editable) is acceptable.

@@ -15,7 +15,7 @@ flowchart TB
 
     subgraph MW["Middleware"]
         m1{"module api on?<br/>(API only)"}
-        m2{"JWT / session valid<br/>and user active?"}
+        m2{"JWT valid (via BFF or API client)<br/>and user active?"}
         m3{"Idempotency-Key<br/>seen before?"}
         replay["Replay stored response<br/>Idempotent-Replayed: true"]
     end
@@ -256,7 +256,7 @@ flowchart TB
 
 An `admin` can only **switch off** what the env licenses; an unlicensed module can never be switched on from the UI or API (D-14). Disabled modules return 404 and disappear from menus (D-17). A weekend change only affects requests submitted afterwards; stored `days` are never recalculated (D-30).
 
-## 6. First-login provisioning (UC-E1, USE_CASES §3.10)
+## 6. First-login provisioning (UC-E1, USE_CASES §3.10, D-43)
 
 ```mermaid
 flowchart TB
@@ -266,10 +266,18 @@ flowchart TB
         deny([Access denied page])
     end
 
-    subgraph L["KeycloakLoginController::callback"]
-        st{"state matches session?"}
-        ex["Exchange code (PKCE) at KEYCLOAK_BASE_URL<br/>verify id_token / access token via JwksCache"]
+    subgraph W["Web: Auth.js callback /auth/callback/keycloak (BFF)"]
+        st{"state + PKCE verifier valid?"}
+        ex["Exchange code at KEYCLOAK_BASE_URL<br/>(confidential client lms-web)"]
+        ck["Set encrypted session cookie<br/>(access, refresh, id token)"]
+        me["Server component: GET /api/v1/me<br/>with Bearer access token"]
+        clr["Clear session cookie"]
+    end
+
+    subgraph G["App: KeycloakJwtGuard"]
+        vt{"JWT valid? (RS256 via JwksCache,<br/>iss, azp, exp)"}
         rl{"realm_access.roles has a base role<br/>employee, manager or hr_admin?"}
+        act{"user.is_active?"}
     end
 
     subgraph P["KeycloakUserProvisioner"]
@@ -282,15 +290,12 @@ flowchart TB
         grant["GrantInitialEntitlement (prorated)"]
     end
 
-    subgraph S["Session (Redis)"]
-        act{"user.is_active?"}
-        sess["Auth::login, session regenerate,<br/>store id_token for logout"]
-    end
-
     kcl --> st
     st -- no --> deny
-    st -- yes --> ex --> rl
-    rl -- no --> deny
+    st -- yes --> ex --> ck --> me --> vt
+    vt -- no --> clr
+    vt -- yes --> rl
+    rl -- "no (403)" --> clr
     rl -- yes --> f1
     f1 -- yes --> sync
     f1 -- no --> f2
@@ -299,11 +304,11 @@ flowchart TB
     sync --> doj
     doj -- yes --> grant --> act
     doj -- no --> act
-    act -- no --> deny
-    act -- yes --> sess --> home
+    act -- "no (401)" --> clr --> deny
+    act -- yes --> home
 ```
 
-The same provisioner runs inside `KeycloakJwtGuard` for API calls, so an API-first user is provisioned identically.
+Laravel has no login callback any more (D-43): the first API call with a new `sub` is the first login, whether it comes from the web BFF (`azp` = `lms-web`) or a third-party API client, so both are provisioned identically.
 
 ## 7. Role change guardrails (UC-U6, G1–G7)
 

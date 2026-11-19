@@ -7,9 +7,13 @@ info:
     Contract-first API (decision D-21). **This file is the source of truth**; see
     `docs/API_GUIDELINES.md` for conventions.
 
-    * Every `/api/v1` operation requires the `api` module (404 problem when off).
+    * The `api` module gates **third-party** access (404 problem when off). Calls from the
+      first-party web frontend's BFF (token `azp` = `lms-web`) are always served, and
+      `GET /branding` is public (decision D-43).
     * Authentication: Keycloak OIDC Bearer JWT (decision D-20). Tokens are obtained
-      from Keycloak (client `lms-api-cli`, auth code + PKCE), never from this API.
+      from Keycloak, never from this API: API clients use `lms-api-cli` (auth code + PKCE);
+      the Next.js frontend's BFF uses the confidential client `lms-web` server-side and
+      proxies `/bff/api/*` to `/api/v1/*`, so browsers never hold tokens (D-43).
     * `x-roles` lists the Keycloak realm roles allowed to call an operation at all.
       Every user holds exactly one base role (`employee`, `manager`, `hr_admin`); the
       `admin` realm role (branding, modules, identity admin) is additive (D-29).
@@ -54,7 +58,7 @@ tags:
   - name: Departments
     description: Organisational departments.
   - name: Settings
-    description: Branding and modules (white-label, role `admin`); working week (role `hr_admin`, D-30).
+    description: Branding and modules (white-label, role `admin`); working week (role `hr_admin`, D-30); public branding for the frontend (D-43).
   - name: Reports
     description: Requires the `reports` module.
   - name: Health
@@ -199,6 +203,52 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/LeaveRuleViolation'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests/preview:
+    post:
+      tags: [Leave requests]
+      operationId: previewLeaveRequest
+      summary: Dry-run an application (day count and balance), nothing is stored
+      description: |
+        Runs the same validation as `POST /leave-requests` (V1–V9) and returns the server-computed
+        `days` (weekend days from the working week, holidays when the `holidays` module is on) and
+        the caller's available balance before and after (D-43). Writes nothing, takes no row
+        locks, sends no notification and ignores `Idempotency-Key`. The result is advisory:
+        `POST /leave-requests` re-validates. Used by the frontend's apply form while the user
+        picks dates; clients should debounce calls.
+      x-roles: [employee, manager, hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LeaveRequestCreate'}
+            examples:
+              earnedLeave: {$ref: '#/components/examples/LeaveRequestCreateEL'}
+      responses:
+        '200':
+          description: The request would be accepted now.
+          headers:
+            X-RateLimit-Limit: {$ref: '#/components/headers/X-RateLimit-Limit'}
+            X-RateLimit-Remaining: {$ref: '#/components/headers/X-RateLimit-Remaining'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data: {$ref: '#/components/schemas/LeaveRequestPreview'}
+                  meta: {type: object}
+                  links: {type: object}
+              example:
+                data: {days: 3.0, leave_year: 2026, tracks_balance: true, available_before: 39.0, available_after: 36.0}
+                meta: {}
+                links: {}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/LeaveRuleViolation'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
@@ -974,6 +1024,39 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /branding:
+    get:
+      tags: [Settings]
+      operationId: getPublicBranding
+      summary: Public branding and enabled modules (no auth)
+      description: |
+        Used by the Next.js frontend to theme every page, including the sign-in page, and to
+        hide disabled modules (D-43). No authentication and not gated by the `api` module.
+        Exposes only the effective brand and the list of **enabled** module keys, never
+        licensing internals (`licensed`, `available`, `locked`) or override keys.
+        Asset URLs always point at `/branding/{asset}` (bundled default when not overridden).
+        Rate limited per client IP (limiter `public`).
+      security: []
+      responses:
+        '200':
+          description: Effective public branding.
+          headers:
+            Cache-Control:
+              description: '`public, max-age=30`'
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data: {$ref: '#/components/schemas/PublicBranding'}
+                  meta: {type: object}
+                  links: {type: object}
+              examples:
+                acme: {$ref: '#/components/examples/PublicBrandingAcme'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /settings/branding:
     get:
       tags: [Settings]
@@ -1138,8 +1221,9 @@ paths:
       summary: Enable / disable a licensed module
       description: |
         Only modules in `MODULES_ENABLED` (env, licensed) and `available` can be enabled;
-        others yield 422 `MODULE_NOT_LICENSED`. Disabling `api` through the API is refused
-        (422) to avoid locking the caller out; use the web admin.
+        others yield 422 `MODULE_NOT_LICENSED`. Disabling `api` is allowed: it only blocks
+        third-party clients and `/api/docs`; the first-party frontend (BFF, `azp` = `lms-web`)
+        keeps working (D-43).
       x-roles: [admin]
       requestBody:
         required: true
@@ -1302,7 +1386,8 @@ components:
     keycloak:
       type: openIdConnect
       description: |
-        Keycloak realm `lms` of the deployment. Public client `lms-api-cli` (auth code + PKCE S256).
+        Keycloak realm `lms` of the deployment. API clients: public client `lms-api-cli` (auth code + PKCE S256).
+        First-party frontend: confidential client `lms-web` used server-side by the Next.js BFF (D-43).
         Access token must be RS256, `iss` = `{KEYCLOAK_PUBLIC_URL}/realms/lms`, `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES`.
         Send as `Authorization: Bearer <token>`.
       openIdConnectUrl: http://localhost:8081/realms/lms/.well-known/openid-configuration
@@ -2035,6 +2120,21 @@ components:
         day_part: {$ref: '#/components/schemas/DayPart'}
         reason: {type: string, minLength: 3, maxLength: 1000}
         handover_note: {type: [string, 'null'], maxLength: 2000}
+    LeaveRequestPreview:
+      type: object
+      required: [days, leave_year, tracks_balance, available_before, available_after]
+      properties:
+        days: {$ref: '#/components/schemas/Days'}
+        leave_year: {type: integer, description: Leave year label (D-26).}
+        tracks_balance: {type: boolean, description: false for e.g. LWP; then both balances are null.}
+        available_before:
+          oneOf:
+            - $ref: '#/components/schemas/Days'
+            - type: 'null'
+        available_after:
+          oneOf:
+            - $ref: '#/components/schemas/Days'
+            - type: 'null'
     DecisionComment:
       type: object
       additionalProperties: false
@@ -2107,6 +2207,21 @@ components:
           items:
             type: string
             enum: [brand.name, brand.primary_color, brand.accent_color, brand.logo_path, brand.favicon_path]
+    PublicBranding:
+      type: object
+      required: [name, primary_color, accent_color, primary_contrast, logo_url, favicon_url, modules]
+      properties:
+        name: {type: string, maxLength: 60}
+        primary_color: {$ref: '#/components/schemas/HexColor'}
+        accent_color: {$ref: '#/components/schemas/HexColor'}
+        primary_contrast: {$ref: '#/components/schemas/HexColor'}
+        logo_url: {type: string, format: uri}
+        favicon_url: {type: string, format: uri}
+        modules:
+          type: array
+          description: Keys of the currently **enabled** modules (licensed AND available AND not disabled).
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ModuleKey'}
     BrandingUpdate:
       type: object
       additionalProperties: false
@@ -2393,8 +2508,21 @@ components:
           accent_color: '#0e8a16'
           primary_contrast: '#ffffff'
           logo_url: http://localhost:8080/branding/logo?v=3f2a9c
-          favicon_url: http://localhost:8080/favicon.ico
+          favicon_url: http://localhost:8080/branding/favicon?v=default
           overridden: [brand.name, brand.primary_color, brand.logo_path]
+        meta: {}
+        links: {}
+    PublicBrandingAcme:
+      summary: Overridden brand, reports disabled by admin
+      value:
+        data:
+          name: Acme Leave
+          primary_color: '#c2410c'
+          accent_color: '#0e8a16'
+          primary_contrast: '#ffffff'
+          logo_url: http://localhost:8080/branding/logo?v=3f2a9c
+          favicon_url: http://localhost:8080/branding/favicon?v=default
+          modules: [holidays, api, notifications, user_management]
         meta: {}
         links: {}
     ModuleList:

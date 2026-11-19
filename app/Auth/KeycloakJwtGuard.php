@@ -9,15 +9,18 @@ use Firebase\JWT\JWK;
 use Firebase\JWT\JWT;
 use Illuminate\Auth\GuardHelpers;
 use Illuminate\Contracts\Auth\Guard;
+use Illuminate\Http\Client\HttpClientException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Throwable;
 use UnexpectedValueException;
 
 /**
  * Guard `keycloak-jwt` (D-20): stateless Bearer access token issued by Keycloak → local User.
  * One instance per request (Octane flushes guards; setRequest() drops the cached user).
- * Invalid token or inactive user → null (401); token without an LMS base role → AuthorizationException (403).
+ * Invalid token or inactive user → null (401); token without an LMS base role → AuthorizationException (403);
+ * JWKS unreachable with no cached copy → 503 SERVICE_UNAVAILABLE (API_GUIDELINES §4).
  */
 final class KeycloakJwtGuard implements Guard
 {
@@ -42,6 +45,10 @@ final class KeycloakJwtGuard implements Guard
 
         try {
             $claims = $this->decode($token);
+        } catch (HttpClientException $e) {
+            Log::error('auth.jwks_unavailable', ['reason' => $e->getMessage()]);
+
+            throw new ServiceUnavailableHttpException(30, 'Cannot verify the access token right now. Try again later.', $e);
         } catch (Throwable $e) {
             Log::notice('auth.jwt_rejected', ['reason' => $e->getMessage()]);
 

@@ -5,10 +5,11 @@ declare(strict_types=1);
 use App\Exceptions\ProblemJsonRenderer;
 use App\Http\Controllers\HealthController;
 use App\Http\Middleware\EnsureAdmin;
+use App\Http\Middleware\EnsureIdempotency;
 use App\Http\Middleware\EnsureModuleEnabled;
 use App\Http\Middleware\EnsureRole;
-use App\Http\Middleware\Idempotency;
 use App\Http\Middleware\RequestId;
+use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -30,16 +31,19 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // Trusted proxies come from config/trustedproxy.php (TRUSTED_PROXIES).
         $middleware->prepend(RequestId::class);
-        $middleware->throttleWithRedis();
+        // `throttle` = cache RateLimiter: Redis (cache store, DB 1) in every deployment, `array` in tests,
+        // so counters never leak between test runs (throttleWithRedis would always hit real Redis, D-40).
         $middleware->alias([
             'role' => EnsureRole::class,
             'admin' => EnsureAdmin::class,
             'module' => EnsureModuleEnabled::class,
-            'idempotent' => Idempotency::class,
+            'idempotent' => EnsureIdempotency::class,
             // Domain adds: 'active' => EnsureUserIsActive.
         ]);
+        // Auth is in Laravel's priority list and would otherwise run first: a disabled module must 404, not 401.
+        $middleware->prependToPriorityList(AuthenticatesRequests::class, EnsureModuleEnabled::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(new ProblemJsonRenderer);
-        $exceptions->shouldRenderJsonWhen(fn (Request $request): bool => $request->is('api/*') || $request->expectsJson());
+        $exceptions->shouldRenderJsonWhen(fn (Request $request): bool => $request->is('api', 'api/*') || $request->expectsJson());
     })->create();

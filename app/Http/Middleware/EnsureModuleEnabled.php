@@ -9,15 +9,19 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * shortcut: platform stub so `module:<key>` resolves; checks only the licensed env list.
- * Domain replaces the body with app(Modules::class)->enabled(Module::from($module)) (D-14/D-17).
+ * `module:<key>`: 404 when the module is off (problem+json on /api/*).
+ *
+ * shortcut: platform stub, env licence + registry only (config/modules.php). Phase 5 (domain) replaces the
+ * condition with app(Modules::class)->enabled(Module::from($module)) to add the DB `modules.disabled` override.
  */
 final class EnsureModuleEnabled
 {
     public function handle(Request $request, Closure $next, string $module): Response
     {
-        $licensed = config('modules.licensed');
-        abort_if(is_array($licensed) && ! in_array($module, $licensed, true), 404);
+        abort_unless(
+            in_array($module, config('modules.licensed', []), true) && config("modules.registry.{$module}.available", false),
+            404,
+        );
 
         return $next($request);
     }

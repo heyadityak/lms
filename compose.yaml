@@ -14,6 +14,7 @@ x-app: &app
     APP_SERVER_MODE: ${APP_SERVER_MODE:-octane}
     OCTANE_WORKERS: ${OCTANE_WORKERS:-auto}
     OCTANE_MAX_REQUESTS: ${OCTANE_MAX_REQUESTS:-500}
+    CADDY_LOG_LEVEL: ${CADDY_LOG_LEVEL:-WARN}
   volumes:
     - ./:/app
   depends_on:

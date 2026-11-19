@@ -8,17 +8,23 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Base for business-rule failures. Rendered as RFC 9457 problem+json on /api/*
- * with a stable machine-readable `code`. Extend it, e.g. InvalidTransition (409, 'invalid_transition').
+ * Base for business-rule failures. Rendered on /api/* as RFC 9457 problem+json by ProblemJsonRenderer:
+ * `code` is one of the spec's ProblemCode enum (UPPERCASE), `type` = urn:lms:problem:<code in kebab-case>.
  */
 class DomainException extends RuntimeException
 {
+    /**
+     * @param  array<string, list<string>>  $errors  field => messages (always rendered on 422)
+     * @param  array<string, string|int>  $headers  e.g. Retry-After
+     */
     public function __construct(
-        string $message,
-        public readonly string $errorCode = 'domain_error',
+        string $detail,
+        public readonly string $problemCode,
         public readonly int $status = 422,
+        public readonly array $errors = [],
+        public readonly array $headers = [],
         ?Throwable $previous = null,
     ) {
-        parent::__construct($message, 0, $previous);
+        parent::__construct($detail, 0, $previous);
     }
 }

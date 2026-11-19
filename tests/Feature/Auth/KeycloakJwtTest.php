@@ -74,7 +74,7 @@ final class KeycloakJwtTest extends TestCase
         $this->withToken($this->jwt($claims))->getJson('/api/v1/me')
             ->assertUnauthorized()
             ->assertHeader('Content-Type', 'application/problem+json')
-            ->assertHeader('WWW-Authenticate', 'Bearer');
+            ->assertHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
 
         $this->assertDatabaseCount('users', 0);
     }

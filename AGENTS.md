@@ -11,10 +11,10 @@ Core features: employees apply for leave, managers approve/reject, HR admins man
 
 | Component | Version |
 |---|---|
-| PHP (FPM) | 8.4 (`php:8.4-fpm-alpine`) |
+| PHP runtime | **FrankenPHP** 1.x with PHP 8.4 (`dunglas/frankenphp:<pinned 1.x>-php8.4-alpine`), **Laravel Octane** worker mode on `:8000` (`OCTANE_SERVER=frankenphp`); `APP_SERVER_MODE=classic` = non-worker fallback for debugging (D-27). No php-fpm, no FastCGI. |
 | Laravel | 12.x (`laravel/laravel:^12.0`) |
 | PostgreSQL | 17 (`postgres:17-alpine`) |
-| NGINX | `nginx:stable-alpine` |
+| NGINX | `nginx:stable-alpine`: edge reverse proxy + load balancer in front of N app replicas (`proxy_pass` HTTP), static assets, security headers, TLS in prod |
 | Identity / Auth | **Keycloak 26** (OIDC, realm `lms`, realm roles = RBAC authority, D-20). Web: `laravel/socialite` + `socialiteproviders/keycloak` → Laravel session. API: Bearer JWT guard `keycloak-jwt` (`firebase/php-jwt`, JWKS cached in Redis). **No Sanctum, no passwords in the app.** |
 | API contract | [`docs/api/openapi.yaml`](docs/api/openapi.yaml) (OpenAPI 3.1) is the **source of truth**; conventions in [`docs/API_GUIDELINES.md`](docs/API_GUIDELINES.md) (D-21). |
 | Queue / cache / session / locks / rate limits | **Redis 7** (`redis:7-alpine`, `phpredis` ext), separate DBs: default 0, cache 1, session 2, queue 3, prefix `lms-` (D-23). `failed_jobs` in Postgres. |
@@ -24,19 +24,19 @@ Core features: employees apply for leave, managers approve/reject, HR admins man
 | Tests | PHPUnit via `php artisan test` |
 | Style | Laravel Pint (preset `laravel`) |
 | Frontend | Blade + plain CSS with custom properties. **No Node/Vite.** |
-| Extra composer deps allowed | `league/flysystem-aws-s3-v3`, `laravel/socialite`, `socialiteproviders/keycloak`, `firebase/php-jwt` (D-20); dev: `osteel/openapi-httpfoundation-testing` (D-21). `laravel/sanctum` is **not** used. Anything else needs an ADR. |
+| Extra composer deps allowed | `league/flysystem-aws-s3-v3`, `laravel/socialite`, `socialiteproviders/keycloak`, `firebase/php-jwt` (D-20), `laravel/octane` (D-27); dev: `osteel/openapi-httpfoundation-testing` (D-21). `laravel/sanctum` is **not** used. Anything else needs an ADR. |
 
 ## 3. Directory layout
 
 ```
 .
 ├── AGENTS.md / CLAUDE.md
-├── Dockerfile                    # targets: php-base, app-dev, vendor, app-prod, nginx
+├── Dockerfile                    # targets: app-base (FrankenPHP), app-dev, vendor, app-prod, nginx
 ├── compose.yaml                  # nginx, app, worker, scheduler, postgres, redis, rustfs, s3-init, keycloak, mailpit
 ├── .dockerignore  .env.example
 ├── docker/
 │   ├── nginx/default.conf.template
-│   ├── php/php.ini  php/zz-fpm.conf  php/entrypoint.sh
+│   ├── php/php.ini  php/entrypoint.sh                  # entrypoint: caches, then Octane or classic FrankenPHP
 │   ├── keycloak/Dockerfile  keycloak/realm-lms.json   # prod image; DEV realm import (clients, roles, alice/bob/carol)
 │   └── postgres/init/01-test-db.sql                     # creates lms_test + keycloak DBs
 ├── .github/workflows/ci.yml
@@ -78,6 +78,13 @@ Core features: employees apply for leave, managers approve/reject, HR admins man
 - **Enums** (string-backed) for role, status, day part, ledger kind, action, module. Cast them on models. Never compare raw strings.
 - State transitions only via `LeaveStatus::canTransitionTo()` + the Actions. Throw `InvalidTransition` → 409.
 - Ledger is append-only. `LeaveLedgerEntry` overrides `update`/`delete` to throw `LogicException`.
+- **Octane worker-mode safety (D-27).** The app process lives across requests:
+  - No request state in `static` properties, class constants built at runtime, or container **singletons**. Per-request services (`Settings`, `Modules`, branding, the current user/brand, anything holding the request) are `scoped()` bindings.
+  - Never mutate `config()` at runtime (no `config([...])` in request code). Read env-derived config, and DB-backed overrides through `Settings`.
+  - Branding and settings are resolved **per request** (`BrandingComposer` reads `Settings` each request); never cache them in a property of a long-lived object.
+  - Don't inject `Request`, `Auth`, or the container into singleton constructors; resolve them inside the method.
+  - Use `Octane::concurrently` only for independent read work. Long tasks go to the queue.
+  - Workers recycle after `OCTANE_MAX_REQUESTS`; that is a safety net, not a fix for leaks.
 - Dates: `CarbonImmutable` (`Date::use(CarbonImmutable::class)` in AppServiceProvider). "today" = `now()->toDateString()` in `APP_TIMEZONE`.
 - Config: read env **only** in `config/*.php`. Code calls `config()`/`Settings`, never `env()`.
 - Module checks: routes `->middleware('module:<key>')`, views `@module('<key>') … @endmodule`, domain `app(Modules::class)->enabled(Module::X)`.
@@ -97,7 +104,9 @@ docker compose run --rm app composer install
 docker compose run --rm app php artisan key:generate
 docker compose up -d postgres redis rustfs s3-init keycloak mailpit
 docker compose run --rm app php artisan migrate --seed          # DemoSeeder only in local (alice/bob/carol)
-docker compose up -d                                             # nginx :8080, keycloak :8081, rustfs console :9001, mailpit UI :8025
+docker compose up -d                                             # nginx :8080 → app (FrankenPHP/Octane :8000), keycloak :8081, rustfs console :9001, mailpit UI :8025
+docker compose exec app php artisan octane:reload                # reload Octane workers after code changes (or run app with --watch)
+APP_SERVER_MODE=classic docker compose up -d app                 # non-worker FrankenPHP for debugging state issues
 # Dev logins (Keycloak realm import, DEV ONLY): alice (employee), bob (manager), carol (hr_admin)
 
 docker compose run --rm app php artisan test                     # all suites
@@ -134,10 +143,11 @@ Minimum feature scenarios, owned by QA:
 11. Each module off → its routes 404, menu link absent, `holidays` off → holidays not excluded from day count, `notifications` off → no leave notifications sent. Admin cannot enable an unlicensed module (422).
 12. Branding: colour validation, logo upload stored on the fake disk and served by `/branding/logo`, SVG rejected, reset to defaults.
 13. Deactivated user: callback refuses login, API JWT → 401, existing session logged out, pending requests cancelled.
+14. `/healthz` 200. `/readyz` 200 with `db` + `redis` checks (and 503 when the DB or Redis connection is broken).
+15. API: 401 for missing/expired/wrong-`aud`/wrong-`iss`/bad-signature JWT, 404 problem when `api` off, `Idempotency-Key` replay, `X-RateLimit-*` headers, and **every API response validated against `docs/api/openapi.yaml`** (`osteel/openapi-httpfoundation-testing`). Tests never call Keycloak: they sign JWTs with a test RSA key and bind a fake `JwksCache`; web tests use `actingAs()` or fake Socialite.
 16. First SSO login provisions the user (`keycloak_sub`), role synced from realm roles on every login (highest wins; none → refused); `PATCH /users/{id}` with `role` → 422 `ROLE_READ_ONLY`.
 17. User admin (bind `FakeKeycloakAdminClient`, never a real Keycloak): create → Keycloak user + local row + actions email; local insert failure → Keycloak user deleted (compensation) and audit row; duplicate → 409 `IDP_CONFLICT`; Keycloak down → 503 `IDP_UNAVAILABLE` and no local row; self-demote/self-disable → 403; last `hr_admin` → 409 `LAST_HR_ADMIN`; federated profile edit → 422 `IDP_READ_ONLY`; role outside allow-list → 422; `user_management` off → 404; every action writes `user_admin_audits`.
-14. `/healthz` 200. `/readyz` 200 (and 503 when the DB connection is broken).
-15. API: 401 for missing/expired/wrong-`aud`/wrong-`iss`/bad-signature JWT, 404 problem when `api` off, `Idempotency-Key` replay, `X-RateLimit-*` headers, and **every API response validated against `docs/api/openapi.yaml`** (`osteel/openapi-httpfoundation-testing`). Tests never call Keycloak: they sign JWTs with a test RSA key and bind a fake `JwksCache`; web tests use `actingAs()` or fake Socialite.
+18. Octane state leaks: on one worker (`Octane` test helper / `APP_SERVER_MODE=octane` in a dedicated feature test), run request A as alice under brand override X, then request B as bob with no override; assert B sees bob's identity, default branding, its own locale/settings and no leftover auth, scoped bindings or config from A.
 
 ## 7. CI
 `.github/workflows/ci.yml` (SYSTEM_DESIGN §13, D-25) on every PR/push: `lint` (pint --test), `openapi` (Redocly lint of `docs/api/openapi.yaml`), `unit`, `feature` (Postgres 17 + Redis 7 service containers; API responses validated against the spec), `smoke` (`docker compose up --wait`, migrate+seed, curl `/healthz`, `/readyz`, Keycloak discovery). `package` runs on push to `main` and `v*` tags after all of them and pushes `ghcr.io/${{ github.repository }}/app` (target `app-prod`) and `/nginx` (target `nginx`), lowercased = `ghcr.io/heyadityak/lms/{app,nginx}`: `linux/amd64` on `main`, `linux/amd64,linux/arm64` on `v*` tags.
@@ -175,3 +185,5 @@ Project memory is committed under `.logs/`:
 | `.logs/YYYY-MM-DD-<agent>[-n].md` | One file per agent run | Sections: Goal, What I did (files), Commands run + results, Decisions (link D-NN), Bugs found / open issues, Next steps |
 
 Every agent **must** write its run log before finishing and add it to `MEMORY.md`. Read `MEMORY.md` + `decisions.md` at the start of each run.
+
+**Wiki:** the [GitHub wiki](https://github.com/heyadityak/lms/wiki) is a generated mirror of `docs/` + `AGENTS.md` (`scripts/docs-to-wiki.sh`, workflow `.github/workflows/wiki.yml` on push to `main`). Edit `docs/`, never the wiki.

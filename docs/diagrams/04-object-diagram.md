@@ -160,10 +160,10 @@ classDiagram
         created_at = 2026-03-02T11:40Z
     }
 
-    it "1" -- "2" bob : department_id
-    it "1" -- "2" alice : department_id
-    bob "1" -- "1" alice : manager_id
-    alice "1" -- "2" req41 : submits
+    it -- bob : department_id
+    it -- alice : department_id
+    bob -- alice : manager_id
+    alice -- req41 : submits
     alice -- req42 : submits
     el -- req41 : of
     el -- req42 : of

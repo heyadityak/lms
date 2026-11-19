@@ -1,13 +1,13 @@
 # LMS — System Design
 
-Status: v1.2 (architect, 2026-11-19; Keycloak D-20, API contract D-21, in-app user admin D-22). Business rules live in [USE_CASES.md](USE_CASES.md). Where this file and USE_CASES disagree, USE_CASES wins for business rules and this file wins for technical design.
+Status: v1.3 (architect, 2026-11-19; Keycloak D-20, API contract D-21, in-app user admin D-22, Redis D-23, scaling/RustFS D-24, CI D-25, leave year D-26, FrankenPHP D-27). Business rules live in [USE_CASES.md](USE_CASES.md). Where this file and USE_CASES disagree, USE_CASES wins for business rules and this file wins for technical design.
 
 ## 1. Context & constraints
 
 | Item | Choice |
 |---|---|
 | Product | White-label, **single-tenant** LMS. One deployment (and one DB) per customer. |
-| Runtime | PHP-FPM **8.4**, Laravel **12.x**, PostgreSQL **17**, NGINX (stable, alpine) |
+| Runtime | **FrankenPHP** (PHP **8.4**) + **Laravel Octane** worker mode on `:8000` (D-27), Laravel **12.x**, PostgreSQL **17**, NGINX (stable, alpine) as edge reverse proxy |
 | UI | Server-rendered Blade + one plain CSS file (`public/css/app.css`) using CSS custom properties. **No Node/Vite build** (D-05). |
 | API | JSON, `/api/v1`, contract-first: [`docs/api/openapi.yaml`](api/openapi.yaml) + [`docs/API_GUIDELINES.md`](API_GUIDELINES.md) (D-21). Bearer JWT from Keycloak (D-20). |
 | Identity | **Keycloak 26** (own container, `keycloak` DB on the same Postgres server, clustered in prod). Realm `lms`, realm roles `employee|manager|hr_admin`, clients `lms-web` (confidential), `lms-api-cli` (public, PKCE), `lms-admin` (service account, D-22). See §10.1 (D-20). |
@@ -28,7 +28,7 @@ flowchart LR
     C[API client] -->|Bearer JWT| LB
     LB --> N[nginx × N]
     LB -->|/realms/*| KC[keycloak × N]
-    N -->|FastCGI :9000| A[app: php-fpm × N]
+    N -->|HTTP proxy_pass :8000| A[app: FrankenPHP + Octane × N]
     A --> PG[(PostgreSQL 17<br/>db lms + db keycloak)]
     A --> RD[(Redis 7<br/>session, cache, locks,<br/>rate limits, queue)]
     A --> FS[(RustFS / S3<br/>branding assets)]
@@ -59,12 +59,12 @@ flowchart TB
 
 ## 3. Container topology
 
-One Dockerfile with multi-stage targets (D-09). Same `app` image runs as web, worker, scheduler and one-off.
+One Dockerfile with multi-stage targets (D-09, D-27). Same `app` (FrankenPHP) image runs as web (Octane), worker, scheduler and one-off.
 
 | Service (compose) | Image / target | Command | Ports | Prod? | Notes |
 |---|---|---|---|---|---|
-| `nginx` | `Dockerfile` target `nginx` | default | `8080:80` (dev) | yes | `nginx:stable-alpine`. Config from `/etc/nginx/templates/default.conf.template` (envsubst `PHP_FPM_HOST`, default `app:9000`). Copies `public/` from the build. Logs to stdout/stderr. |
-| `app` | target `app-dev` (dev) / `app-prod` | `php-fpm -F` | 9000 (internal) | yes | Dev bind-mounts `./:/var/www/html`. |
+| `nginx` | `Dockerfile` target `nginx` | default | `8080:80` (dev) | yes | `nginx:stable-alpine`. Edge reverse proxy + load balancer: `proxy_pass http://$APP_UPSTREAM` (default `app:8000`, re-resolved via `NGINX_RESOLVER`), **no FastCGI**. Serves `public/` static assets directly, sets security headers, `X-Request-Id`, `X-Forwarded-*`. TLS termination in prod (or the platform LB). Logs to stdout/stderr. |
+| `app` | target `app-dev` (dev) / `app-prod` | `php artisan octane:frankenphp --host=0.0.0.0 --port=8000 --workers=${OCTANE_WORKERS} --max-requests=${OCTANE_MAX_REQUESTS}` (dev adds `--watch` optional); `APP_SERVER_MODE=classic` → `frankenphp php-server --listen :8000 --root public/` | 8000 (internal) | yes | FrankenPHP worker mode (D-27). `SERVER_NAME=:8000` disables Caddy auto-HTTPS. `HEALTHCHECK curl -fsS http://127.0.0.1:8000/healthz`. Octane handles SIGTERM. Dev bind-mounts `./:/app`. |
 | `worker` | same as app | `php artisan queue:work --tries=3 --backoff=10 --max-time=3600` | — | yes | Restart policy `unless-stopped`. SIGTERM finishes the current job. |
 | `scheduler` | same as app | `php artisan schedule:work` | — | yes (1 replica; more are safe) | Every scheduled task uses `->onOneServer()->withoutOverlapping()` (Redis locks). |
 | `postgres` | `postgres:17-alpine` | — | `5432:5432` (dev) | managed DB in prod | `docker/postgres/init/01-test-db.sql` creates `lms_test`. Healthcheck `pg_isready`. Named volume `pgdata`. |
@@ -88,17 +88,18 @@ Volumes (dev): `pgdata`, `redisdata`, `s3data`. No app container has local state
 | Queue | Redis queue; N workers; jobs idempotent; `failed_jobs` in Postgres. |
 | Migrations | One-off job per release (`php artisan migrate --force`), before rolling out new replicas. Never in the entrypoint. |
 | Health | `/healthz` liveness (no I/O); `/readyz` readiness = Postgres `select 1` + Redis `PING` (not Keycloak). |
-| nginx → php-fpm | `PHP_FPM_HOST` is a service name; nginx re-resolves it with `NGINX_RESOLVER` so new app replicas are picked up. |
+| nginx → app | `APP_UPSTREAM` (`app:8000`) is a service name; nginx `proxy_pass`es over HTTP and re-resolves it with `NGINX_RESOLVER` so new app replicas are picked up. |
+| Octane workers | Each replica runs `OCTANE_WORKERS` long-lived PHP workers recycled after `OCTANE_MAX_REQUESTS`. No request state may survive a request (AGENTS.md §4 worker-mode rules). |
 
 ### Dockerfile targets
 
 | Target | FROM | Contents |
 |---|---|---|
-| `php-base` | `php:8.4-fpm-alpine` | ext: `pdo_pgsql`, `intl`, `opcache`, `pcntl`, `zip`, `bcmath`, `redis` (pecl phpredis). `docker/php/php.ini`, `docker/php/zz-fpm.conf` (`catch_workers_output=yes`, `decorate_workers_output=no`, `access.log=/dev/null` since nginx logs access, `clear_env=no`). Runs as `www-data`. |
-| `app-dev` | `php-base` | + composer binary (`COPY --from=composer:2`), `UID`/`GID` build args. No code copied (bind mount). |
+| `app-base` | `dunglas/frankenphp:<pinned 1.x>-php8.4-alpine` (exact tag pinned, e.g. `1.9.1-php8.4-alpine`) | `install-php-extensions pdo_pgsql redis intl zip opcache pcntl bcmath`. `docker/php/php.ini` (opcache, `memory_limit`). `SERVER_NAME=:8000`, `OCTANE_SERVER=frankenphp`. Workdir `/app`. Non-root user. `HEALTHCHECK CMD curl -fsS http://127.0.0.1:8000/healthz`. Caddy Early Hints / Mercure **not** enabled (Later). |
+| `app-dev` | `app-base` | + composer binary (`COPY --from=composer:2`), `UID`/`GID` build args. No code copied (bind mount). |
 | `vendor` | `composer:2` | `composer install --no-dev --no-scripts --prefer-dist --optimize-autoloader` using `composer.json/lock` only (layer cache) |
-| `app-prod` | `php-base` | Copy code + vendor. `opcache.validate_timestamps=0`. **No** `config:cache` at build (env unknown). Entrypoint runs `php artisan config:cache && php artisan route:cache && php artisan view:cache` then `exec "$@"`. No `.env` in image. |
-| `nginx` | `nginx:stable-alpine` | `COPY public/ /var/www/html/public/` + template |
+| `app-prod` | `app-base` | Copy code + vendor. `opcache.validate_timestamps=0`. **No** `config:cache` at build (env unknown). Entrypoint runs `php artisan config:cache && php artisan route:cache && php artisan view:cache`, then `exec "$@"`; default CMD starts Octane (or classic FrankenPHP when `APP_SERVER_MODE=classic`). Worker/scheduler/one-off override CMD with artisan commands. No `.env` in image. |
+| `nginx` | `nginx:stable-alpine` | `COPY public/ /usr/share/nginx/html/` (static assets served by nginx) + `docker/nginx/default.conf.template` (`proxy_pass`, headers) |
 
 `.dockerignore`: `.git`, `vendor`, `node_modules`, `.env*` (but not `.env.example`), `storage/logs/*`, `storage/app/*`, `.logs`, `tests` (prod only; dev uses bind mount).
 
@@ -236,7 +237,7 @@ erDiagram
 | `leave_request_actions` | index `(leave_request_id, created_at)` |
 | `holidays` | unique `(date)` |
 
-Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`. **Not created** (D-20): `password_reset_tokens` (drop it from the stock users migration), `personal_access_tokens` (do not run `install:api` with Sanctum; create `routes/api.php` by hand). Keycloak keeps its own tables in the separate `keycloak` database.
+Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cache_locks`, `jobs`, `job_batches` (unused with Redis, kept as a fallback driver, D-23), `failed_jobs` (used). **Not created** (D-20): `password_reset_tokens` (drop it from the stock users migration), `personal_access_tokens` (do not run `install:api` with Sanctum; create `routes/api.php` by hand). Keycloak keeps its own tables in the separate `keycloak` database.
 
 ### Enums (`app/Enums`, string-backed)
 `Role`, `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module` (`holidays`, `reports`, `api`, `notifications`, `multi_level_approval`, `delegation`). Models cast columns to these enums.
@@ -263,8 +264,8 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 | `App\Auth\KeycloakJwtGuard` | Custom guard `keycloak-jwt` (`Auth::extend`). Reads `Authorization: Bearer`, verifies RS256 signature with `JwksCache`, checks `iss` = `{KEYCLOAK_PUBLIC_URL}/realms/{realm}`, `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES`, `exp`/`nbf` (`KEYCLOAK_JWT_LEEWAY`), then `KeycloakUserProvisioner` and `is_active`. Any failure → 401 problem+json. Uses `firebase/php-jwt`. |
 | `App\Auth\JwksCache` | Fetches `{KEYCLOAK_BASE_URL}/realms/{realm}/protocol/openid-connect/certs` and caches it (`Cache::remember('keycloak:jwks', KEYCLOAK_JWKS_CACHE_TTL)` in Redis). On unknown `kid`, refetches once (key rotation), guarded by a Redis lock to avoid stampedes. |
 | `App\Http\Controllers\Web\Auth\KeycloakLoginController` | `redirect()` (Socialite → Keycloak, `state` + PKCE), `callback()` (code exchange, verify ID/access token, provision, `Auth::login`, `session()->regenerate()`, store `id_token` in session), `logout()` (invalidate session, redirect to end-session endpoint with `id_token_hint` + `post_logout_redirect_uri=APP_URL`). |
-| `App\Support\Settings` (singleton) | Key/value read with env fallback. Cached (§8). |
-| `App\Support\Modules` (singleton) | `enabled(Module $m): bool`, `all()` for the admin UI. |
+| `App\Support\Settings` (**scoped** binding, `$this->app->scoped()`) | Key/value read with env fallback. Cached in Redis (§8). Scoped so Octane workers resolve settings per request (D-27). |
+| `App\Support\Modules` (scoped binding) | `enabled(Module $m): bool`, `all()` for the admin UI. |
 | `App\Notifications\*` | `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled` (no `AccountCreated`: Keycloak owns account mails, D-20). All `ShouldQueue`, mail channel. Sent only if `notifications` is enabled. |
 | `App\Console\Commands\AccrueYear` | `lms:accrue-year {year?}` → `RunYearStartAccrual`. Scheduled `yearlyOn(config('lms.leave_year_start_month'), 1, '00:10')->onOneServer()->withoutOverlapping()` (D-24, D-26). |
 
@@ -328,7 +329,7 @@ See USE_CASES §3.6 (diagram + transition/actor table). Implementation: `LeaveSt
 ## 8. White-label: settings, theming, modules
 
 ### 8.1 Settings resolution
-`effective(key) = settings.value (DB override) ?? config default (from env)`. Read via `App\Support\Settings::get(key)`. Cached with `Cache::rememberForever('settings:all', …)` (Redis cache store) and invalidated on every write. Per-request memoised. There is no cross-replica staleness beyond one request because every replica reads the same Redis cache.
+`effective(key) = settings.value (DB override) ?? config default (from env)`. Read via `App\Support\Settings::get(key)`. Cached with `Cache::rememberForever('settings:all', …)` (Redis cache store) and invalidated on every write. Memoised per request only (scoped binding; never in a static or singleton under Octane). There is no cross-replica staleness beyond one request because every replica reads the same Redis cache.
 
 | Setting key | Env default | Validation | Used in |
 |---|---|---|---|
@@ -386,9 +387,9 @@ Gating points (all four are required):
 | IV | Backing services | Postgres, Redis, SMTP, S3 (RustFS), Keycloak by URL/env (`DB_*`, `REDIS_*`, `MAIL_*`, `AWS_*`, `KEYCLOAK_*`). Swap without code change. |
 | V | Build, release, run | CI builds an immutable image. Release = image + env. Caches (`config:cache` etc.) are built at container start. |
 | VI | Processes | Stateless: sessions/cache/locks/queue in Redis, uploads on the shared S3 disk. No local state in prod containers, no sticky sessions. |
-| VII | Port binding | php-fpm on 9000, nginx on 80. |
+| VII | Port binding | Fully satisfied: the app is a self-contained HTTP server (FrankenPHP/Octane on `:8000`); nginx on 80 is only an optional edge proxy. |
 | VIII | Concurrency | Scale `nginx`, `app`, `worker`, `keycloak` horizontally. `scheduler` = 1 replica, tasks `onOneServer()` + `withoutOverlapping()` (Redis locks). See §3.1. |
-| IX | Disposability | Fast start. `queue:work` handles SIGTERM gracefully. php-fpm graceful on SIGQUIT (`STOPSIGNAL SIGQUIT`). |
+| IX | Disposability | Fast start. Octane drains workers on SIGTERM; `queue:work` finishes the current job on SIGTERM. |
 | X | Dev/prod parity | Same Dockerfile, same Postgres (17) and Redis (7) majors, same drivers, S3 API in dev too (RustFS). Only Mailpit and the Keycloak start mode (`start-dev` + realm import) differ. |
 | XI | Logs | `LOG_CHANNEL=stderr`, `LOG_STDERR_FORMATTER=Monolog\Formatter\JsonFormatter`. nginx access/error → stdout/stderr. No log files. |
 | XII | Admin processes | `docker compose run --rm app php artisan migrate --force`, `... lms:accrue-year 2027`, `... db:seed --class=DemoSeeder`. In prod: same image as a one-off job. |
@@ -425,8 +426,13 @@ Gating points (all four are required):
 | `KEYCLOAK_ADMIN_CLIENT_ID`, `KEYCLOAK_ADMIN_CLIENT_SECRET` | `lms-admin`, `lms-admin-dev-secret` | service-account client for the Admin REST API (D-22). **Secret**. |
 | `KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD` | `admin`, `admin` | compose only: Keycloak bootstrap admin (`KC_BOOTSTRAP_ADMIN_*`) |
 | Keycloak container | — | `KC_DB=postgres`, `KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak`, `KC_DB_USERNAME`, `KC_DB_PASSWORD`, `KC_HOSTNAME=${KEYCLOAK_PUBLIC_URL}`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`, `KC_HTTP_ENABLED=true` (dev), `KC_HEALTH_ENABLED=true`; prod image adds `KC_CACHE=ispn` (clustered) |
-| `PHP_FPM_HOST` | `app:9000` | nginx template |
-| `NGINX_RESOLVER` | `127.0.0.11` | DNS nginx uses to re-resolve `PHP_FPM_HOST` (k8s: kube-dns IP) |
+| `APP_SERVER_MODE` | `octane` | `octane` (FrankenPHP worker mode) or `classic` (non-worker FrankenPHP, debugging fallback) |
+| `OCTANE_SERVER` | `frankenphp` | |
+| `OCTANE_WORKERS` | `auto` | workers per replica (auto = CPU count) |
+| `OCTANE_MAX_REQUESTS` | `500` | recycle a worker after N requests (`--max-requests`) |
+| `SERVER_NAME` | `:8000` | Caddy site address; disables FrankenPHP auto-HTTPS |
+| `APP_UPSTREAM` | `app:8000` | nginx template: HTTP upstream of the app replicas |
+| `NGINX_RESOLVER` | `127.0.0.11` | DNS nginx uses to re-resolve `APP_UPSTREAM` (k8s: kube-dns IP) |
 | `TRUSTED_PROXIES` | `*` (dev) | behind ingress |
 
 ## 10. Security
@@ -442,7 +448,7 @@ Gating points (all four are required):
 | Input | Form Requests on every write. Eloquent bindings only (no raw string SQL with input). Mass assignment via `$fillable`. |
 | Output | Blade `{{ }}` escaping. No `{!! !!}` except the CSS variable block, which holds validated hex. |
 | Uploads | Mime + size + dimension validation. No SVG. Random hashed names. Private disk served via controller. |
-| Headers | nginx: `X-Content-Type-Options nosniff`, `X-Frame-Options DENY`, `Referrer-Policy strict-origin-when-cross-origin`, `server_tokens off`. HSTS at ingress. |
+| Headers | nginx (edge, in front of FrankenPHP): `X-Content-Type-Options nosniff`, `X-Frame-Options DENY`, `Referrer-Policy strict-origin-when-cross-origin`, `server_tokens off`. HSTS at ingress. |
 | Data | No hard deletes of users or requests. Ledger append-only (model `update()`/`delete()` throw). |
 | Secrets | Only via env / orchestrator secrets. Never committed, never in the image. |
 
@@ -462,14 +468,14 @@ Gating points (all four are required):
 
 | Item | Spec |
 |---|---|
-| Logs | JSON lines to stderr (Monolog `JsonFormatter`). Add context via `Log::withContext(['request_id' => …, 'user_id' => …])` in middleware. `X-Request-Id` comes from nginx `$request_id` (forwarded as `fastcgi_param HTTP_X_REQUEST_ID`) and is echoed in the response header. |
+| Logs | JSON lines to stderr (Monolog `JsonFormatter`). Add context via `Log::withContext(['request_id' => …, 'user_id' => …])` in middleware. `X-Request-Id` comes from nginx `$request_id` (forwarded as `proxy_set_header X-Request-Id`) and is echoed in the response header. |
 | Domain events | `Log::info('leave.approved', [...ids, days])` for each transition, accrual run summary, settings change. |
-| `GET /healthz` | Liveness. No DB. `200 {"status":"ok"}`. Excluded from session/CSRF middleware (register outside the `web` group or via `withoutMiddleware`). |
+| `GET /healthz` | Liveness, served by Octane on `:8000`. No DB. `200 {"status":"ok"}`. Excluded from session/CSRF middleware (register outside the `web` group or via `withoutMiddleware`). |
 | `GET /readyz` | Readiness. `DB::select('select 1')` + `Schema::hasTable('migrations')` and Redis `PING` → `200 {"status":"ready","checks":{"db":"ok","redis":"ok"}}`, else `503 {"status":"unavailable","checks":{…"fail"}}`. Does **not** check Keycloak, S3 or SMTP (a dependency blip must not restart every replica). No secrets in output. |
 | nginx | `location = /nginx-health { return 200; }` for the nginx container's own healthcheck. |
 | Queue | Redis queue; `failed_jobs` table in Postgres. `php artisan queue:failed` as a one-off. |
 | Keycloak | `/health/ready`, `/metrics` on the management port (9000). |
-| Compose healthchecks | postgres `pg_isready`, redis `redis-cli ping`, rustfs `/health`, keycloak `/health/ready`, nginx `/nginx-health`; `s3-init` must complete before app/worker/scheduler start. app: `php-fpm-healthcheck` not required; use `SCRIPT_NAME=/ping` fpm ping (`ping.path=/ping`) via `cgi-fcgi`. Optional, platform's call. |
+| Compose healthchecks | postgres `pg_isready`, redis `redis-cli ping`, rustfs `/health`, keycloak `/health/ready`, nginx `/nginx-health`; `s3-init` must complete before app/worker/scheduler start. app: `curl -fsS http://127.0.0.1:8000/healthz` (image `HEALTHCHECK`); worker/scheduler: healthcheck disabled (no HTTP). |
 
 ## 12. Migrations strategy
 
@@ -498,8 +504,9 @@ Image names are derived from `github.repository` and lowercased (`${GITHUB_REPOS
 
 ## 14. Sources
 - Laravel 12 release notes (PHP 8.2–8.5 support): https://laravel.com/docs/12.x/releases
-- Laravel deployment/optimisation, queues, scheduling, Sanctum, filesystem, logging: https://laravel.com/docs/12.x/deployment , https://laravel.com/docs/12.x/queues , https://laravel.com/docs/12.x/scheduling , https://laravel.com/docs/12.x/sanctum , https://laravel.com/docs/12.x/filesystem , https://laravel.com/docs/12.x/logging
+- Laravel deployment/optimisation, queues, scheduling, Octane, filesystem, logging: https://laravel.com/docs/12.x/deployment , https://laravel.com/docs/12.x/queues , https://laravel.com/docs/12.x/scheduling , https://laravel.com/docs/12.x/octane , https://laravel.com/docs/12.x/filesystem , https://laravel.com/docs/12.x/logging
 - Twelve-Factor App: https://12factor.net/
+- FrankenPHP (worker mode, Docker images, `install-php-extensions`): https://frankenphp.dev/docs/ , https://frankenphp.dev/docs/docker/ , https://frankenphp.dev/docs/laravel/
 - Laravel Redis / cache locks / scheduling `onOneServer`: https://laravel.com/docs/12.x/redis , https://laravel.com/docs/12.x/cache#atomic-locks , https://laravel.com/docs/12.x/scheduling#running-tasks-on-one-server
 - RustFS (S3-compatible object storage): https://rustfs.com/ , https://github.com/rustfs/rustfs
 - Multi-platform builds: https://docs.docker.com/build/ci/github-actions/multi-platform/
@@ -512,3 +519,17 @@ Image names are derived from `github.repository` and lowercased (`${GITHUB_REPOS
 - NGINX docker image templates (envsubst): https://hub.docker.com/_/nginx
 - GHCR publishing via Actions: https://docs.github.com/en/actions/use-cases-and-examples/publishing-packages/publishing-docker-images
 - CSS custom properties: https://developer.mozilla.org/en-US/docs/Web/CSS/Using_CSS_custom_properties
+
+## 15. Diagrams
+
+Mermaid diagrams (render on GitHub; SVG exports in `docs/diagrams/svg/`). Index: [docs/diagrams/README.md](diagrams/README.md).
+
+| Diagram | Link |
+|---|---|
+| System context, containers, deployment per customer, horizontal scaling | [01-system-design.md](diagrams/01-system-design.md) |
+| Data flow (DFD level 0 and 1, stores D1–D14) | [02-data-flow.md](diagrams/02-data-flow.md) |
+| Class diagrams (models/enums, domain logic, identity, HTTP) + class names to adopt | [03-class-diagram.md](diagrams/03-class-diagram.md) |
+| Object diagram (snapshot with balances) | [04-object-diagram.md](diagrams/04-object-diagram.md) |
+| Activity diagrams (apply, approve/reject, cancel, accrual, settings, first login, role guardrails) | [05-activity-diagrams.md](diagrams/05-activity-diagrams.md) |
+| Sequence diagrams (OIDC login/logout, API JWT, leave flows, accrual, readiness, branding, API errors + idempotency, user creation + compensation) | [06-sequence-diagrams.md](diagrams/06-sequence-diagrams.md) |
+| Leave request state machine | [07-state-diagram.md](diagrams/07-state-diagram.md) |

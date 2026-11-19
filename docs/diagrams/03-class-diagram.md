@@ -3,7 +3,7 @@
 Split in four so each renders legibly on GitHub:
 
 1. **Domain model**: Eloquent models + enums (tables from [SYSTEM_DESIGN.md](../SYSTEM_DESIGN.md) §4).
-2. **Domain logic**: leave/accrual actions, services, support singletons, console command, exceptions.
+2. **Domain logic**: leave/accrual actions, services, scoped support services, console command, exceptions.
 3. **Identity**: Keycloak login, JWT guard, provisioning, Keycloak Admin client and user-admin actions (D-20, D-22).
 4. **HTTP + delivery**: controllers, form requests, policies, middleware, notifications, view composer.
 
@@ -295,13 +295,13 @@ classDiagram
         +current()$ int
     }
     class Settings {
-        <<Support singleton>>
+        <<Support, scoped binding>>
         +get(string key) mixed
         +set(string key, mixed value, User actor) void
         +forget(string key) void
     }
     class Modules {
-        <<Support singleton>>
+        <<Support, scoped binding>>
         +enabled(Module m) bool
         +licensed() array
         +all() array

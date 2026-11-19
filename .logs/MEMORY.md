@@ -10,6 +10,7 @@ Read this first, then `decisions.md`, then the docs it points to.
 
 - 2026-11-19 (phase 1): FrankenPHP + Octane containers verified (scaled compose, S3 roundtrip, suites green). Use `task` (Taskfile) instead of make.
 - 2026-11-19 (phase 2): `ci.yml` (lint, openapi, unit, feature) + `package.yml` (ci → compose smoke → GHCR app/nginx) written, actionlint clean, commands verified locally; not yet run on GitHub (D-38).
+- 2026-11-19 (phase 3): Keycloak auth done: realm import (4 roles, dave, kc-admin-api for lms-admin), OIDC login/logout verified against real Keycloak, `auth:keycloak-jwt` guard + Redis JWKS cache, provisioning/role sync; 50 tests green (D-39). Open: Octane swallows app JSON logs ("unknown error").
 
 ## Run logs
 | Date | Agent | File | Summary |
@@ -21,6 +22,7 @@ Read this first, then `decisions.md`, then the docs it points to.
 | 2026-11-19 | architect | [2026-11-19-architect-review.md](2026-11-19-architect-review.md) | Applied user answers Q3–Q10: additive `admin` role (D-29), editable weekend (D-30), SL backdate (D-31), IdP-down blocks identity admin (D-32), no Keycloak image (D-33), `user_management` checklist (D-34); MIT license (D-35); root README. Spec + diagrams re-validated. |
 | 2026-11-19 | platform | [2026-11-19-phase1-platform.md](2026-11-19-phase1-platform.md) | Phase 1: FrankenPHP 1.13.5/PHP 8.4 + Octane image, nginx upstream LB, compose (app×3, worker×2 verified), /healthz /readyz, Taskfile; 36 tests green, pint clean (D-37). |
 | 2026-11-19 | platform | [2026-11-19-phase2-platform.md](2026-11-19-phase2-platform.md) | Phase 2: ci.yml + package.yml (workflow_call gate, smoke scale app=2, GHCR multi-arch on tags); actionlint clean; local pint/unit/feature/redocly/smoke green (D-38). |
+| 2026-11-19 | platform | [2026-11-19-phase3-platform.md](2026-11-19-phase3-platform.md) | Phase 3: Keycloak realm, web OIDC login + RP logout, JWT guard `keycloak-jwt` + JWKS cache (rate-limited refetch), provisioning/role sync, users identity-column migration; live stack verified (scale app=3, Admin API create/delete); 50 tests green (D-39). |
 
 ## Open questions (awaiting user)
 1. ~~Leave year~~ Resolved by D-26 (`LEAVE_YEAR_START_MONTH`, default 1). Confirm env-only (not admin-editable) is acceptable.

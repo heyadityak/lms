@@ -17,28 +17,50 @@
     "realm": [
       {
         "name": "employee",
-        "description": "LMS employee"
+        "description": "LMS base role: employee (apply for leave)"
       },
       {
         "name": "manager",
-        "description": "LMS manager (approves direct reports)"
+        "description": "LMS base role: manager (approves direct reports)"
       },
       {
         "name": "hr_admin",
-        "description": "LMS HR admin (users, leave types, holidays, branding, modules)"
+        "description": "LMS base role: HR admin (departments, leave types, holidays, balances, reports)"
+      },
+      {
+        "name": "admin",
+        "description": "LMS additive role: branding, modules, Keycloak user management (D-29). Needs a base role too."
+      },
+      {
+        "name": "offline_access",
+        "description": "${role_offline-access}"
+      },
+      {
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}"
+      },
+      {
+        "name": "default-roles-lms",
+        "description": "Default roles: every new user is an employee",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "offline_access",
+            "uma_authorization",
+            "employee"
+          ],
+          "client": {
+            "account": [
+              "view-profile",
+              "manage-account"
+            ]
+          }
+        }
       }
     ]
   },
   "defaultRole": {
-    "name": "default-roles-lms",
-    "composite": true,
-    "composites": {
-      "realm": [
-        "offline_access",
-        "uma_authorization",
-        "employee"
-      ]
-    }
+    "name": "default-roles-lms"
   },
   "clients": [
     {
@@ -71,7 +93,7 @@
           "protocolMapper": "oidc-usermodel-realm-role-mapper",
           "config": {
             "multivalued": "true",
-            "claim.name": "roles",
+            "claim.name": "realm_access.roles",
             "jsonType.label": "String",
             "access.token.claim": "true",
             "id.token.claim": "true",
@@ -108,7 +130,7 @@
           "protocolMapper": "oidc-usermodel-realm-role-mapper",
           "config": {
             "multivalued": "true",
-            "claim.name": "roles",
+            "claim.name": "realm_access.roles",
             "jsonType.label": "String",
             "access.token.claim": "true",
             "id.token.claim": "true",
@@ -121,7 +143,7 @@
     {
       "clientId": "lms-dev-cli",
       "name": "DEV ONLY password-grant client",
-      "description": "DEV ONLY. Direct access grants for local smoke tests. Never import in production.",
+      "description": "DEV ONLY. Direct access grants (password grant) for local smoke tests; tokens carry aud lms-api-cli so the API accepts them. Never import in production.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,
@@ -135,11 +157,22 @@
           "protocolMapper": "oidc-usermodel-realm-role-mapper",
           "config": {
             "multivalued": "true",
-            "claim.name": "roles",
+            "claim.name": "realm_access.roles",
             "jsonType.label": "String",
             "access.token.claim": "true",
             "id.token.claim": "true",
             "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience lms-api-cli",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "lms-api-cli",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
             "introspection.token.claim": "true"
           }
         }
@@ -157,7 +190,12 @@
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
-      "serviceAccountsEnabled": true
+      "serviceAccountsEnabled": true,
+      "defaultClientScopes": [
+        "basic",
+        "kc-admin-api"
+      ],
+      "optionalClientScopes": []
     }
   ],
   "users": [
@@ -234,12 +272,35 @@
       ]
     },
     {
+      "username": "dave",
+      "enabled": true,
+      "email": "dave@example.test",
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "Admin",
+      "attributes": {
+        "dev_only": [
+          "true"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "default-roles-lms",
+        "employee",
+        "admin"
+      ]
+    },
+    {
       "username": "service-account-lms-admin",
       "enabled": true,
       "serviceAccountClientId": "lms-admin",
-      "realmRoles": [
-        "default-roles-lms"
-      ],
+      "realmRoles": [],
       "clientRoles": {
         "realm-management": [
           "manage-users",

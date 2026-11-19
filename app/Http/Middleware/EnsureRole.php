@@ -8,7 +8,7 @@ use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
-/** `role:hr_admin,manager` — coarse role gate from the Keycloak-synced users.role. Resource rules stay in Policies. */
+/** `role:hr_admin,manager` — coarse gate on the base role (users.role, synced from Keycloak). `admin` is a flag: use the `admin` middleware. Resource rules stay in Policies. */
 final class EnsureRole
 {
     public function handle(Request $request, Closure $next, string ...$roles): Response

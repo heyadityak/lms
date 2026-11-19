@@ -21,6 +21,4 @@ return [
     'leeway' => (int) env('KEYCLOAK_JWT_LEEWAY', 30),
     'jwks_cache_ttl' => (int) env('KEYCLOAK_JWKS_CACHE_TTL', 3600),
 
-    // Realm roles the app understands, highest privilege first. users.role caches the first match.
-    'roles' => ['hr_admin', 'manager', 'employee'],
 ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Exceptions\ProblemJsonRenderer;
 use App\Http\Controllers\HealthController;
+use App\Http\Middleware\EnsureAdmin;
 use App\Http\Middleware\EnsureModuleEnabled;
 use App\Http\Middleware\EnsureRole;
 use App\Http\Middleware\Idempotency;
@@ -32,6 +33,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->throttleWithRedis();
         $middleware->alias([
             'role' => EnsureRole::class,
+            'admin' => EnsureAdmin::class,
             'module' => EnsureModuleEnabled::class,
             'idempotent' => Idempotency::class,
             // Domain adds: 'active' => EnsureUserIsActive.

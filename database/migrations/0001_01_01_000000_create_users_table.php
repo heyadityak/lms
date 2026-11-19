@@ -15,17 +15,15 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
-            // Keycloak owns identity, credentials and roles (no local passwords).
-            $table->string('keycloak_sub', 64)->unique();
             $table->string('name');
             $table->string('email')->unique();
-            // Cache of the highest Keycloak realm role, re-synced on every login. Never edited by the app.
-            $table->string('role', 20)->default('employee')->index();
             $table->timestamp('email_verified_at')->nullable();
+            $table->string('password');
             $table->rememberToken();
             $table->timestamps();
         });
 
+        // No password_reset_tokens table: passwords live in Keycloak (D-20).
         Schema::create('sessions', function (Blueprint $table) {
             $table->string('id')->primary();
             $table->foreignId('user_id')->nullable()->index();

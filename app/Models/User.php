@@ -15,13 +15,20 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
 
+    /** DB defaults, so new models match the row before refresh(). */
+    protected $attributes = [
+        'role' => 'employee',
+        'is_admin' => false,
+        'is_active' => true,
+    ];
+
     /**
-     * The attributes that are mass assignable.
+     * The attributes that are mass assignable. Identity columns (keycloak_sub, role, is_admin)
+     * are written only by KeycloakUserProvisioner via forceFill (Keycloak is the authority, D-20).
      *
      * @var list<string>
      */
     protected $fillable = [
-        'keycloak_sub',
         'name',
         'email',
     ];
@@ -44,6 +51,8 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'is_admin' => 'boolean',
+            'is_active' => 'boolean',
         ];
     }
 }

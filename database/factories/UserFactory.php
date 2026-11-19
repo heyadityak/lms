@@ -26,6 +26,8 @@ class UserFactory extends Factory
             'email_verified_at' => now(),
             'keycloak_sub' => (string) Str::uuid(),
             'role' => 'employee',
+            'is_admin' => false,
+            'is_active' => true,
             'remember_token' => Str::random(10),
         ];
     }

@@ -1,0 +1,8 @@
+node_modules
+.next
+coverage
+e2e
+.env*
+*.tsbuildinfo
+Dockerfile
+.dockerignore

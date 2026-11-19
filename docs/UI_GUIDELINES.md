@@ -52,7 +52,7 @@ Rules:
 - Use the `App` component wrapper so `message`/`modal` pick up the theme (no static `message.success`).
 - Dates: antd v6 uses `dayjs`. Send and receive `YYYY-MM-DD` strings; do not use local time-zone conversion for dates.
 - One component library only (antd). No extra CSS framework.
-- **antd v6 API names only.** Deprecated v5 props still work in v6 but print dev warnings and disappear in v7: treat an antd deprecation warning as a bug. `List` is deprecated since 6.6: use `Listy`. Import sub-components from their own path in server-rendered files (antd's Next.js note, e.g. no `<Select.Option />`; prefer `options` / `items` props).
+- **antd v6 API names only.** Deprecated v5 props still work in v6 but print dev warnings and disappear in v7: treat an antd deprecation warning as a bug. `List` is deprecated since 6.6: use `Listy` (verified against antd 6.7.1 in phase 9: `List` logs "deprecated … use `Listy`"; `Listy` is a virtual list with `items` + `itemRender` and a required `rowKey`, not a drop-in for `List`'s `dataSource`/`renderItem`). Component sizes are `small | medium | large` (`middle` still type-checks but is the v5 name). Import sub-components from their own path in server-rendered files (antd's Next.js note, e.g. no `<Select.Option />`; prefer `options` / `items` props). Compound members (`Typography.Title`, `Layout.Sider`, …) are `undefined` when accessed in a **server** component (client reference), so render them only inside `'use client'` components.
 
 ## 4. Theming tokens (white-label)
 

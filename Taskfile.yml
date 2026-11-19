@@ -23,8 +23,14 @@ tasks:
     cmds: [docker compose build]
 
   test:
-    desc: Run all test suites (Unit + Feature on Postgres/Redis)
-    cmds: ['{{.RUN}} php artisan test {{.CLI_ARGS}}']
+    desc: Run all test suites (Unit + Feature on Postgres/Redis); the known-bug group is excluded (phpunit.xml)
+    cmds:
+      - '{{.RUN}} php artisan test {{.CLI_ARGS}}'
+      - 'echo "Excluded known-bug tests: $(grep -rho "#\[Group(.known-bug.)\]" tests | wc -l | tr -d " ") (run: task test:known-bugs)"'
+
+  test:known-bugs:
+    desc: Run only the tests that document open bugs (expected to fail)
+    cmds: ['{{.RUN}} php artisan test --group=known-bug {{.CLI_ARGS}}']
 
   test:unit:
     desc: Run the Unit suite

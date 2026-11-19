@@ -12,6 +12,12 @@
             <directory>tests/Feature</directory>
         </testsuite>
     </testsuites>
+    <!-- Real bugs found by QA stay red but out of the default run (AGENTS §9). `task test:known-bugs` runs them. -->
+    <groups>
+        <exclude>
+            <group>known-bug</group>
+        </exclude>
+    </groups>
     <source>
         <include>
             <directory>app</directory>
@@ -31,6 +37,11 @@
         <env name="SESSION_DRIVER" value="array" force="true"/>
         <env name="LOG_CHANNEL" value="null" force="true"/>
         <env name="MODULES_ENABLED" value="holidays,reports,api,notifications,user_management" force="true"/>
+        <!-- Separate Redis DBs so tests never touch dev data in DB 0-3 (qa, phase 7). -->
+        <env name="REDIS_DB" value="10" force="true"/>
+        <env name="REDIS_CACHE_DB" value="11" force="true"/>
+        <env name="REDIS_SESSION_DB" value="12" force="true"/>
+        <env name="REDIS_QUEUE_DB" value="13" force="true"/>
         <env name="PULSE_ENABLED" value="false" force="true"/>
         <env name="TELESCOPE_ENABLED" value="false" force="true"/>
         <env name="NIGHTWATCH_ENABLED" value="false" force="true"/>

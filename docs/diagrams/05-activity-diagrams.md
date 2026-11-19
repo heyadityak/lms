@@ -266,12 +266,12 @@ flowchart TB
         deny([Access denied page])
     end
 
-    subgraph W["Web: Auth.js callback /auth/callback/keycloak (BFF)"]
-        st{"state + PKCE verifier valid?"}
-        ex["Exchange code at KEYCLOAK_BASE_URL<br/>(confidential client lms-web)"]
-        ck["Set encrypted session cookie<br/>(access, refresh, id token)"]
+    subgraph W["Web: Better Auth callback /auth/callback/keycloak (BFF)"]
+        st{"state (lms_auth verification row)<br/>+ PKCE verifier valid?"}
+        ex["Exchange code at KEYCLOAK_BASE_URL<br/>(confidential client lms-web),<br/>verify ID token (JWKS, iss, aud, nonce)"]
+        ck["Upsert user mirror + account tokens,<br/>create session in lms_auth,<br/>set HttpOnly session cookie"]
         me["Server component: GET /api/v1/me<br/>with Bearer access token"]
-        clr["Clear session cookie"]
+        clr["Delete session (lms_auth) + cookie"]
     end
 
     subgraph G["App: KeycloakJwtGuard"]

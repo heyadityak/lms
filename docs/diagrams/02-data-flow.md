@@ -25,7 +25,7 @@ Business rules come from [USE_CASES.md](../USE_CASES.md); tables from [SYSTEM_DE
 | D8 Settings | Postgres | `settings` (`brand.*`, `modules.disabled`, `work.weekend_days`) | P9 |
 | D9 Failed jobs | Postgres | `failed_jobs` | P7 |
 | D10 Branding assets | RustFS (S3-compatible), `BRANDING_DISK=s3` | `logo-{sha1}.{ext}`, `favicon-{sha1}.{ext}` | P9 |
-| D11 Web session (browser cookie) | Encrypted Auth.js cookie held by the browser, readable only by `web` (`AUTH_SECRET`); no server store since D-43 | access, refresh and id token, `expires_at` | P1 |
+| D11 Web sessions | Postgres DB `lms_auth` (Better Auth, D-45), read/written only by `web`; browser holds only the signed session cookie + JWE cache | `session`, `account` (access, refresh, id token, expiries; encrypted), `verification` (OAuth state), `user` (Keycloak mirror) | P1 |
 | D12 Cache, locks, rate limits | Redis DB 1 | `settings:all`, `keycloak:jwks`, `keycloak:admin-token`, `idem:{user}:{key}`, schedule / guard locks, `throttle:*` | P1, P2, P6, P9, P11 |
 | D13 Queue | Redis DB 3 | `queues:default` (notification jobs) | P2, P3, P4 → read by P7 |
 | D14 User-admin audit | Postgres | `user_admin_audits` (append-only) | P11 |
@@ -89,7 +89,7 @@ flowchart LR
     D7[[D7 leave_ledger_entries]]
     D8[[D8 settings]]
     D9[[D9 failed_jobs]]
-    D11[[D11 Web session cookie<br/>encrypted, web only]]
+    D11[[D11 lms_auth DB<br/>web sessions + tokens]]
     D12[[D12 Redis cache / JWKS /<br/>idempotency / throttle]]
     D13[[D13 Redis queue]]
 

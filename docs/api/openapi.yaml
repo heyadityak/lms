@@ -1439,7 +1439,8 @@ components:
       name: page[number]
       in: query
       required: false
-      schema: {type: integer, minimum: 1, default: 1}
+      description: 1-based page number. Above 10000 → 422 `VALIDATION_FAILED`.
+      schema: {type: integer, minimum: 1, maximum: 10000, default: 1}
     PageSize:
       name: page[size]
       in: query
@@ -1539,7 +1540,7 @@ components:
             code: FORBIDDEN
             request_id: 6f1c0e9a8b7d4c3e
     NotFound:
-      description: Unknown or invisible resource, or the module (`api`, `holidays`, `reports`) is disabled.
+      description: Unknown or invisible resource (also for actions on an invisible resource), or the module (`api`, `holidays`, `reports`) is disabled. `detail` is always the same generic text, so ids cannot be probed.
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
@@ -1547,7 +1548,7 @@ components:
             type: urn:lms:problem:not-found
             title: Not Found
             status: 404
-            detail: The requested resource does not exist.
+            detail: The requested resource was not found.
             instance: /api/v1/holidays
             code: NOT_FOUND
             request_id: 6f1c0e9a8b7d4c3e

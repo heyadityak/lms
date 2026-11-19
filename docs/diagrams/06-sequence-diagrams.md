@@ -1,10 +1,10 @@
 # 06 — Sequence diagrams
 
-Runtime interactions. `Web` is a Next.js replica (pages + Auth.js + BFF, D-43); browsers never hold Keycloak tokens. `App` is an API-only FrankenPHP replica running Laravel Octane in worker mode on `:8000` (D-27); NGINX proxies to it over plain HTTP (no FastCGI). Redis logical DBs follow D-23 (cache 1, queue 3; no sessions since D-43). Keycloak details follow D-20/D-22; API conventions follow [API_GUIDELINES.md](../API_GUIDELINES.md).
+Runtime interactions. `Web` is a Next.js replica (pages + Better Auth + BFF, D-43, D-45); browsers never hold Keycloak tokens, which live in the Postgres DB `lms_auth`. `App` is an API-only FrankenPHP replica running Laravel Octane in worker mode on `:8000` (D-27); NGINX proxies to it over plain HTTP (no FastCGI). Redis logical DBs follow D-23 (cache 1, queue 3; no sessions since D-43). Keycloak details follow D-20/D-22; API conventions follow [API_GUIDELINES.md](../API_GUIDELINES.md).
 
 | # | Flow |
 |---|---|
-| 1 | Web login via the Next.js BFF (OIDC auth code + PKCE, encrypted session cookie, provisioning on the first API call) |
+| 1 | Web login via the Next.js BFF (Better Auth, OIDC auth code + PKCE, session in `lms_auth`, provisioning on the first API call) |
 | 2 | RP-initiated logout via the BFF |
 | 3 | API call with a Keycloak Bearer JWT (JWKS cached in Redis) |
 | 4 | Apply for leave: Browser → NGINX → Next BFF → NGINX → app, queue, worker, mail |
@@ -23,10 +23,11 @@ sequenceDiagram
     autonumber
     actor U as User (browser)
     participant N as NGINX
-    participant W as Web (Next.js + Auth.js)
+    participant W as Web (Next.js + Better Auth)
+    participant AU as Postgres lms_auth
     participant K as Keycloak (realm lms)
     participant A as App (FrankenPHP / Octane, API only)
-    participant DB as Postgres
+    participant DB as Postgres lms
 
     U->>N: GET / (no session cookie)
     N->>W: proxy_pass / → web:3000
@@ -34,32 +35,37 @@ sequenceDiagram
     N->>A: proxy_pass /api/ → app:8000
     A-->>W: brand + enabled modules (public)
     W-->>U: sign-in page themed with brand tokens
-    U->>N: POST /auth/signin/keycloak (Auth.js CSRF token)
+    Note over W,K: at startup: discovery from KEYCLOAK_BASE_URL. Keycloak (hostname v2, backchannel dynamic) returns issuer, auth and end-session on KEYCLOAK_PUBLIC_URL, token and JWKS on KEYCLOAK_BASE_URL
+    U->>N: POST /auth/sign-in/social {provider keycloak} (Origin checked)
     N->>W: proxy_pass
-    W->>W: state + PKCE verifier in short-lived encrypted cookies
-    W-->>U: 302 KEYCLOAK_PUBLIC_URL/realms/lms/protocol/openid-connect/auth (client lms-web, S256)
+    W->>AU: INSERT verification (state, PKCE verifier, nonce)
+    W-->>U: 302 KEYCLOAK_PUBLIC_URL/realms/lms/protocol/openid-connect/auth (client lms-web, S256, nonce)
     U->>K: login page (customer upstream Keycloak, LDAP / AD / SAML broker possible)
     K-->>U: 302 APP_URL/auth/callback/keycloak?code=…&state=…
     U->>N: GET /auth/callback/keycloak
     N->>W: proxy_pass
-    W->>W: check state, load verifier
+    W->>AU: load + delete verification row (state, verifier)
     W->>K: POST token endpoint via KEYCLOAK_BASE_URL (code, verifier, lms-web secret)
     K-->>W: access_token, refresh_token, id_token
-    W-->>U: 302 / + Set-Cookie session (JWE: tokens + expires_at, HttpOnly, Secure, SameSite=Lax)
+    W->>W: verify id_token (JWKS, iss, aud, nonce)
+    W->>AU: upsert user mirror + account (tokens encrypted), INSERT session
+    W-->>U: 302 / + Set-Cookie session token (signed) + session_data (JWE cache), HttpOnly, Secure, SameSite=Lax
     U->>N: GET / (session cookie)
     N->>W: proxy_pass
+    W->>AU: account access token (session from JWE cookie cache)
     W->>N: GET /api/v1/me, Authorization Bearer (server component)
     N->>A: proxy_pass
     A->>A: module:api passes (azp = lms-web), KeycloakJwtGuard verifies RS256, iss, azp, exp
     A->>DB: KeycloakUserProvisioner: find by keycloak_sub, else link by verified email, else insert, then sync role, is_admin
     alt no base role / inactive
         A-->>W: 403 / 401 problem+json
+        W->>AU: DELETE session
         W-->>U: access-denied page, session cookie cleared
     else ok
         A-->>W: 200 user
         W-->>U: dashboard HTML (antd, role- and module-aware nav)
     end
-    Note over W: Stateless: any web replica decrypts the cookie with the shared AUTH_SECRET. No sticky sessions, no session store.
+    Note over W,AU: Any web replica serves any step: OAuth state, sessions and tokens are in lms_auth, cookies are signed/encrypted with the shared BETTER_AUTH_SECRET. No sticky sessions, no in-memory state.
 ```
 
 ## 2. RP-initiated logout via the BFF
@@ -69,14 +75,15 @@ sequenceDiagram
     autonumber
     actor U as User (browser)
     participant N as NGINX
-    participant W as Web (Next.js BFF)
+    participant W as Web (Next.js BFF + Better Auth)
+    participant AU as Postgres lms_auth
     participant K as Keycloak
 
     U->>N: POST /bff/logout (session cookie, Origin header)
     N->>W: proxy_pass
     W->>W: Origin = APP_URL origin? else 403
-    W->>W: read id_token from session, clear session cookie
-    W-->>U: 302 KEYCLOAK_PUBLIC_URL/…/logout?id_token_hint=…&post_logout_redirect_uri=APP_URL/
+    W->>AU: auth.api.signOut: read account id_token, DELETE session
+    W-->>U: 303 KEYCLOAK_PUBLIC_URL/…/logout?id_token_hint=…&post_logout_redirect_uri=APP_URL/&client_id=lms-web + cookies cleared
     U->>K: end-session request
     K->>K: end SSO session, revoke refresh tokens
     K-->>U: 302 APP_URL/ (signed-out, sign-in page)
@@ -128,6 +135,7 @@ sequenceDiagram
     actor E as Employee (browser)
     participant N as NGINX
     participant W as Web (Next.js BFF)
+    participant AU as Postgres lms_auth
     participant K as Keycloak
     participant A as App (FrankenPHP / Octane)
     participant MW as Middleware (module:api, auth:keycloak-jwt, active, throttle, idempotent)
@@ -139,10 +147,12 @@ sequenceDiagram
 
     E->>N: POST /bff/api/leave-requests (cookie, Origin, Idempotency-Key, JSON)
     N->>W: proxy_pass / → web:3000
-    W->>W: Origin check, decrypt session
+    W->>W: Origin check, session from JWE cookie cache
+    W->>AU: account tokens for the session
     opt access token expires within 60 s
         W->>K: refresh_token grant (KEYCLOAK_BASE_URL)
         K-->>W: new access + refresh token (rotated)
+        W->>AU: UPDATE account tokens
     end
     W->>N: POST LMS_API_URL/api/v1/leave-requests, Authorization Bearer, Idempotency-Key, X-Forwarded-For
     N->>A: proxy_pass /api/ → app:8000
@@ -157,7 +167,7 @@ sequenceDiagram
     else ok
         A-->>W: 201 {data} + Location + X-RateLimit-*
     end
-    W-->>E: same status, body and allow-listed headers (+ Set-Cookie if tokens were refreshed)
+    W-->>E: same status, body and allow-listed headers
     E->>E: TanStack Query invalidates balances and requests, problem errors mapped to form fields
     Wk->>R: pop job
     Wk->>DB: load request, approver(s)

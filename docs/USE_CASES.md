@@ -188,14 +188,16 @@ stateDiagram-v2
     cancelled --> [*]
 ```
 
-**Approver resolution** (computed at action time, not stored at submit):
-1. If the requester has `manager_id` and that manager is active → the manager.
+**Approver resolution** (computed at action time, not stored at submit; D-46):
+1. If the requester has `manager_id`, that manager is active **and** their base role is `manager` or `hr_admin` → the manager.
 2. Otherwise → any active `hr_admin` other than the requester.
+
+Only users with base role `manager` or `hr_admin` may approve or reject. A direct manager whose role is `employee` is skipped (the request falls back to HR), so HR must give the `manager` role to anyone who manages people.
 
 | Transition | Who may do it | Side effects |
 |---|---|---|
 | submit → `pending` | Any active user, for themselves only | `leave_request_actions(submitted)`; notify approver(s) |
-| `pending` → `approved` | Resolved manager, or any `hr_admin`; **never the requester** | Re-run V6 + V7 (excluding this request from pending). Write `debit` (−days) if `tracks_balance`. Set `decided_by`, `decided_at`. Notify requester. |
+| `pending` → `approved` | Resolved manager (base role `manager` or `hr_admin`), or any `hr_admin`; **never the requester** | Re-run V6 + V7 (excluding this request from pending). Write `debit` (−days) if `tracks_balance`. Set `decided_by`, `decided_at`. Notify requester. |
 | `pending` → `rejected` | Same as approve | `decision_comment` required. Notify requester. |
 | `pending` → `cancelled` | Requester, or any `hr_admin` | Notify approver if cancelled by requester. |
 | `approved` → `cancelled` | Requester only if `start_date > today`; `hr_admin` any time (not their own once started) | Write `reversal` (+days) for the **full** amount. Notify the other party. |

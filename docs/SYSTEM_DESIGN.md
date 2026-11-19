@@ -8,10 +8,10 @@ Status: v1.5 (architect, 2026-11-19; Next.js frontend + BFF, Laravel API-only D-
 |---|---|
 | Product | White-label, **single-tenant** LMS. One deployment (and one DB) per customer. |
 | Runtime | **FrankenPHP** (PHP **8.4**) + **Laravel Octane** worker mode on `:8000` (D-27), Laravel **12.x**, PostgreSQL **17**, NGINX (stable, alpine) as edge reverse proxy |
-| UI | **Next.js 16** frontend (`web/`, App Router, TypeScript strict, standalone output, Node 24 LTS alpine, non-root, `:3000`), **Ant Design v5** (`antd` + `@ant-design/nextjs-registry` + `@ant-design/icons`), TanStack Query, typed client generated from the OpenAPI spec. Runtime theming via antd `ConfigProvider` tokens (`cssVar: true`). Screens: [UI_GUIDELINES.md](UI_GUIDELINES.md). Laravel is **API-only** (D-43, supersedes D-05). See §6.1. |
+| UI | **Next.js 16** frontend (`web/`, App Router, TypeScript strict, standalone output, Node 24 LTS alpine, non-root, `:3000`), **Ant Design v6** (`antd` + `@ant-design/nextjs-registry` + `@ant-design/icons` v6, D-45), TanStack Query, typed client generated from the OpenAPI spec. Runtime theming via antd `ConfigProvider` tokens (CSS variables, always on in v6). Screens: [UI_GUIDELINES.md](UI_GUIDELINES.md). Laravel is **API-only** (D-43, supersedes D-05). See §6.1. |
 | API | JSON, `/api/v1`, contract-first: [`docs/api/openapi.yaml`](api/openapi.yaml) + [`docs/API_GUIDELINES.md`](API_GUIDELINES.md) (D-21). Bearer JWT from Keycloak (D-20). |
 | Identity | **Keycloak 26** (own container, `keycloak` DB on the same Postgres server, clustered in prod). Realm `lms`, realm roles `employee|manager|hr_admin` (base, one per user) + `admin` (additive, D-29), clients `lms-web` (confidential), `lms-api-cli` (public, PKCE), `lms-admin` (service account, D-22). See §10.1 (D-20). |
-| Web auth | **BFF** in Next.js: Auth.js v5 (Keycloak provider, confidential client `lms-web`, auth code + PKCE), tokens only in the encrypted HttpOnly session cookie (JWT strategy, stateless); `/bff/api/*` proxies to Laravel `/api/v1/*` with `Authorization: Bearer`. Laravel has no sessions and no login routes. No passwords in the app (D-43). |
+| Web auth | **BFF** in Next.js: Better Auth (generic OAuth plugin → Keycloak, confidential client `lms-web`, auth code + PKCE), tokens stored server-side in Postgres DB `lms_auth`, browser gets only an HttpOnly session cookie; `/bff/api/*` proxies to Laravel `/api/v1/*` with `Authorization: Bearer`. Laravel has no sessions and no login routes. No passwords in the app (D-43, D-45). |
 | Queue / cache / locks / rate limits | **Redis 7** (`phpredis`), D-23. Separate logical DBs: `default` 0, `cache` 1 (cache, atomic locks, rate limiters, JWKS, admin token, idempotency keys), queue 3; DB 2 (`session`) unused since D-43 (`SESSION_DRIVER=array`). Key prefix `REDIS_PREFIX=lms-`. `failed_jobs` stays in Postgres. |
 | Mail | SMTP via env. `log` mailer in tests, Mailpit in compose. |
 | Files | Laravel disk `BRANDING_DISK=s3` (and `FILESYSTEM_DISK=s3`): **RustFS** (S3-compatible) in dev/compose, any S3-compatible store in prod. The `branding` local disk exists only for single-node installs (D-24). |
@@ -67,17 +67,18 @@ One Dockerfile with multi-stage targets (D-09, D-27) for `app` and `nginx`, plus
 | Service (compose) | Image / target | Command | Ports | Prod? | Notes |
 |---|---|---|---|---|---|
 | `nginx` | `Dockerfile` target `nginx` | default | `8080:80` (dev) | yes | `nginx:stable-alpine`. Edge reverse proxy + load balancer (D-43 routing): `/api/`, `/healthz`, `/readyz`, `/branding/` → upstream `app` (`APP_UPSTREAM`, default `app:8000`); everything else → upstream `web` (`WEB_UPSTREAM`, default `web:3000`); both re-resolved via `NGINX_RESOLVER`, keepalive, **no FastCGI**. `large_client_header_buffers 4 16k` (chunked session cookie). Sets security headers, `X-Request-Id`, `X-Forwarded-*`. TLS termination in prod (or the platform LB). Logs to stdout/stderr. No Laravel `public/` copy any more. |
-| `web` | `web/Dockerfile` (stages `deps`, `build`, `runner`; `node:24-alpine`) | `node server.js` (Next standalone) | 3000 (internal) | yes, N replicas | Next.js frontend + BFF (§6.1). Non-root `node` user. `HEALTHCHECK` `wget -qO- http://127.0.0.1:3000/bff/healthz`. Stateless: session = encrypted cookie (`AUTH_SECRET` shared by all replicas); Next fetch cache per replica only holds public branding (≤ 30 s). Calls Laravel via `LMS_API_URL` (`http://nginx`) and Keycloak back-channel via `KEYCLOAK_BASE_URL`. Dev: `web-dev` tooling service (bind mount, `npm run dev`/lint/test), defined by platform. |
+| `web` | `web/Dockerfile` (stages `deps`, `build`, `runner`; `node:24-alpine`) | `node server.js` (Next standalone) | 3000 (internal) | yes, N replicas | Next.js frontend + BFF (§6.1). Non-root `node` user. `HEALTHCHECK` `wget -qO- http://127.0.0.1:3000/bff/healthz`. Stateless process: sessions and tokens in Postgres `lms_auth` (`AUTH_DATABASE_URL`), `BETTER_AUTH_SECRET` shared by all replicas (D-45); Next fetch cache per replica only holds public branding (≤ 30 s). Calls Laravel via `LMS_API_URL` (`http://nginx`) and Keycloak via `KEYCLOAK_BASE_URL` (discovery, token, JWKS). Auth migrations: one-off `node scripts/auth-migrate.mjs`. Dev: `web-dev` tooling service (bind mount, `npm run dev`/lint/test), defined by platform. |
 | `app` | target `app-dev` (dev) / `app-prod` | `php artisan octane:frankenphp --host=0.0.0.0 --port=8000 --workers=${OCTANE_WORKERS} --max-requests=${OCTANE_MAX_REQUESTS}` (dev adds `--watch` optional); `APP_SERVER_MODE=classic` → `frankenphp php-server --listen :8000 --root public/` | 8000 (internal) | yes | FrankenPHP worker mode (D-27). `SERVER_NAME=:8000` disables Caddy auto-HTTPS. `HEALTHCHECK curl -fsS http://127.0.0.1:8000/healthz`. Octane handles SIGTERM. Dev bind-mounts `./:/app`. |
 | `worker` | same as app | `php artisan queue:work --tries=3 --backoff=10 --max-time=3600` | — | yes | Restart policy `unless-stopped`. SIGTERM finishes the current job. |
 | `scheduler` | same as app | `php artisan schedule:work` | — | yes (1 replica; more are safe) | Every scheduled task uses `->onOneServer()->withoutOverlapping()` (Redis locks). |
-| `postgres` | `postgres:17-alpine` | — | `5432:5432` (dev) | managed DB in prod | `docker/postgres/init/01-test-db.sql` creates `lms_test`. Healthcheck `pg_isready`. Named volume `pgdata`. |
+| `postgres` | `postgres:17-alpine` | — | `5432:5432` (dev) | managed DB in prod | `docker/postgres/init/01-test-db.sql` creates `lms_test`, `keycloak` and `lms_auth` (Better Auth, D-45). Healthcheck `pg_isready`. Named volume `pgdata`. |
 | `redis` | `redis:7-alpine` | `redis-server --appendonly yes` | internal | managed Redis in prod (TLS via `REDIS_SCHEME=tls` / `REDIS_URL`) | Healthcheck `redis-cli ping`. Volume `redisdata`. |
 | `rustfs` | `rustfs/rustfs` | — | `9000` S3 API, `9001` console | **dev** (prod: any S3-compatible store) | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY`. Volume `s3data`. Healthcheck `/health`. |
 | `s3-init` | `amazon/aws-cli` | `head-bucket \|\| create-bucket $AWS_BUCKET` | — | dev; prod bucket is provisioned by IaC | Init container, idempotent. `app`/`worker`/`scheduler` wait for `service_completed_successfully`. |
 | `keycloak` | upstream `quay.io/keycloak/keycloak:26.x` everywhere (dev `start-dev --import-realm`; prod `start`, clustered cache `ispn` by default). No custom image is built or published (D-33). | — | `8081:8080` (dev) | yes, ≥2 replicas clustered | DB `keycloak` on the same Postgres (`docker/postgres/init` creates it). Dev realm import `docker/keycloak/realm-lms.json` (realm, roles, clients, dev users). Prod: customers import/configure the documented realm (§10.1) in their upstream Keycloak. Health on management port 9000 `/health/ready`. |
 | `mailpit` | `axllent/mailpit` | — | `8025` UI, `1025` SMTP | **dev only** | Also Keycloak's SMTP in dev. |
 | one-off | same as app | `docker compose run --rm app php artisan migrate --force` | — | yes | Admin processes (12-factor XII). |
+| one-off (web) | same as web | `docker compose run --rm web node scripts/auth-migrate.mjs` | — | yes | Better Auth schema in `lms_auth` (D-45), before rolling out web replicas. |
 
 Volumes (dev): `pgdata`, `redisdata`, `s3data`. No app container has local state.
 
@@ -85,12 +86,12 @@ Volumes (dev): `pgdata`, `redisdata`, `s3data`. No app container has local state
 
 | Rule | How |
 |---|---|
-| No sticky sessions | Laravel is stateless (Bearer JWT, no sessions). The `web` session is the encrypted Auth.js cookie, decryptable by any `web` replica with the shared `AUTH_SECRET`; BFF CSRF = SameSite=Lax + Origin check, no server-side token. |
+| No sticky sessions | Laravel is stateless (Bearer JWT, no sessions). `web` sessions, OAuth state and tokens live in the shared Postgres DB `lms_auth` (Better Auth, D-45), with a 5-minute JWE cookie cache any replica can read with the shared `BETTER_AUTH_SECRET`; no per-process auth state (Better Auth's rate limiter uses the DB too). BFF CSRF = SameSite=Lax + Origin check. |
 | Shared cache, locks, rate limits | Redis `cache` DB. `Cache::lock()`, `RateLimiter`, `Settings` cache invalidation are cluster-wide. |
 | Uploads | Only on the shared S3 disk (RustFS/S3). Never `storage/app` in prod. |
 | Scheduler | `onOneServer()` + `withoutOverlapping()` on every scheduled task (Redis atomic locks), so running >1 scheduler is harmless. |
 | Queue | Redis queue; N workers; jobs idempotent; `failed_jobs` in Postgres. |
-| Migrations | One-off job per release (`php artisan migrate --force`), before rolling out new replicas. Never in the entrypoint. |
+| Migrations | One-off jobs per release (`php artisan migrate --force`; web: `node scripts/auth-migrate.mjs`), before rolling out new replicas. Never in the entrypoint. |
 | Health | `/healthz` liveness (no I/O); `/readyz` readiness = Postgres `select 1` + Redis `PING` (not Keycloak). |
 | nginx → app / web | `APP_UPSTREAM` (`app:8000`) and `WEB_UPSTREAM` (`web:3000`) are service names; nginx `proxy_pass`es over HTTP and re-resolves them with `NGINX_RESOLVER` so new replicas are picked up. The BFF calls back through nginx (`LMS_API_URL=http://nginx`) so app replicas stay balanced even with Node keepalive. |
 | Octane workers | Each replica runs `OCTANE_WORKERS` long-lived PHP workers recycled after `OCTANE_MAX_REQUESTS`. No request state may survive a request (AGENTS.md §4 worker-mode rules). |
@@ -286,14 +287,14 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 | `/api/` | `app` | Laravel only: `/api/v1/*`, `/api/docs`, `/api/openapi.yaml`. Next never defines `/api/*`. |
 | `/healthz`, `/readyz`, `/branding/` | `app` | Health and public branding assets. |
 | `= /nginx-health` | nginx | |
-| `/` (everything else) | `web` | Pages, `/auth/*` (Auth.js `basePath`), `/bff/*` (BFF handlers), `/_next/*`. |
+| `/` (everything else) | `web` | Pages, `/auth/*` (Better Auth `basePath`), `/bff/*` (BFF handlers), `/_next/*`. |
 
 **Next.js routes:**
 
 | Path | Who (UI gate; Laravel Policies decide) | Module | API used (via `/bff/api`) |
 |---|---|---|---|
-| `/auth/signin`, `/auth/callback/keycloak`, `/auth/*` | public (Auth.js) | core | Keycloak |
-| `POST /bff/logout` | session | core | Keycloak end-session (redirect) |
+| `/signin` (landing page), `POST /auth/sign-in/social`, `/auth/callback/keycloak`, `/auth/*` | public (Better Auth) | core | Keycloak |
+| `POST /bff/logout` | session | core | Better Auth `signOut` → 303 to Keycloak end-session |
 | `/bff/api/[...path]` | session | — | proxy to `/api/v1/{path}` |
 | `GET /bff/healthz` | public, container healthcheck | — | none |
 | `/` dashboard | any | core | `/me`, `/me/balances`, `/approvals` (count), Team Time Off (manager, hr_admin): `/leave-requests?filter[status]=approved,pending&filter[from]&filter[to]&include=user`, Next Holidays: `/holidays` (module) |
@@ -310,13 +311,13 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 
 The paths for leave requests and approvals keep the old web paths, so notification mail links (`APP_URL` + path) work.
 
-**Auth (BFF).** Auth.js v5 (exact pin; maintenance-only upstream, D-43(n)) with the Keycloak provider and confidential client `lms-web` (auth code + PKCE S256 + `state`), `basePath: '/auth'`, session strategy `jwt`. The encrypted session cookie (`__Secure-authjs.session-token`, HttpOnly, Secure in prod, SameSite=Lax, chunked > 4 KB) holds `access_token`, `refresh_token`, `id_token`, `expires_at` only. The `jwt` callback refreshes ~60 s before expiry (Keycloak `lms-web`: revoke refresh tokens, max reuse 1); refresh failure ⇒ session cleared ⇒ sign-in again (silent while the Keycloak SSO session lives). Provider endpoints are explicit: browser-facing authorization/end-session on `KEYCLOAK_PUBLIC_URL`, back-channel token/userinfo/JWKS on `KEYCLOAK_BASE_URL`, `issuer` = `KEYCLOAK_PUBLIC_URL/realms/{realm}`. Logout: `POST /bff/logout` → clear cookie → 302 to Keycloak end-session with `id_token_hint`, `post_logout_redirect_uri=APP_URL/`. The browser never sees tokens.
+**Auth (BFF, D-45).** Better Auth `1.7.26` (exact pin), handler at `/auth/[...all]` (`basePath: '/auth'`, `baseURL: APP_URL`), `genericOAuth` provider `keycloak`: confidential client `lms-web`, auth code + PKCE S256 + `state` + OIDC `nonce`, ID token verified (`requireIdTokenVerification`). Endpoints come from discovery on the **internal** URL `${KEYCLOAK_BASE_URL}/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration`: Keycloak hostname v2 (`KC_HOSTNAME` = public URL, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`) returns `issuer`, authorization and end-session on the public URL and token, userinfo and JWKS on the internal one, so no endpoint is hard-coded. No email/password, no other providers; the Better Auth `user` table only mirrors Keycloak users. Store: Postgres DB `lms_auth` (`AUTH_DATABASE_URL`, separate from `lms`): `session`, `account` (access/refresh/ID token, encrypted at rest), `verification` (OAuth state, so the callback may hit any replica), `rateLimit`. Cookies: `__Secure-lms.session_token` (signed) + `__Secure-lms.session_data` (JWE cookie cache, 5 min), HttpOnly, Secure in prod, SameSite=Lax; no tokens in cookies. Token use: one server helper gets the access token for the session's Keycloak account (`getAccessToken`, refreshing when < 60 s are left via `refreshToken`; Keycloak `lms-web` revokes refresh tokens, max reuse 1; on refresh failure re-read once, then delete the session ⇒ sign in again, silent while the Keycloak SSO session lives). Logout: `POST /bff/logout` (Origin-checked) → `auth.api.signOut` deletes the session and returns the Keycloak end-session URL with `id_token_hint`, `post_logout_redirect_uri=APP_URL/`, `client_id` → 303. Schema migrations: one-off `node scripts/auth-migrate.mjs` (§12). The browser never sees tokens.
 
 **BFF proxy** `/bff/api/[...path]` → `${LMS_API_URL}/api/v1/{path}`: adds `Authorization: Bearer`, `X-Forwarded-For/-Proto/-Host`; forwards `Accept`, `Content-Type`, `Idempotency-Key`, streamed body; never `Cookie`. Returns status, body and `Content-Type`, `Content-Disposition`, `Location`, `Retry-After`, `X-RateLimit-*`, `Idempotent-Replayed`, `X-Request-Id`, `WWW-Authenticate` unchanged. No session ⇒ own `401` problem+json `UNAUTHENTICATED`; Laravel 401 ⇒ also clears the cookie. CSRF: mutating methods need `Origin` = `APP_URL` origin (else 403 `FORBIDDEN`). Details: API_GUIDELINES §5.1.
 
 **Data.** Types from `openapi-typescript` (`web/src/lib/api/schema.d.ts`, committed, CI checks freshness), client `openapi-fetch`. Server components call `${LMS_API_URL}/api/v1` directly with the session's token; client components use TanStack Query against `/bff/api` (invalidate lists after mutations). Problem+json `errors` map to form field errors; `code` drives messages.
 
-**UI.** Ant Design v5 (`antd`), `AntdRegistry` for SSR style extraction, `ConfigProvider` theme from branding (§8.2). Screens follow the Figma community file "Employee Leave Management" mapped onto antd (Layout + Sider nav, Card/Statistic balances, Table requests, Calendar holidays/team leave, Form + DatePicker.RangePicker apply, Drawer/Modal details); inventory, component mapping, tokens and breakpoints in [UI_GUIDELINES.md](UI_GUIDELINES.md). antd components are client components; data comes from server components or TanStack Query. Dark mode out of MVP.
+**UI.** Ant Design v6 (`antd`, D-45), `AntdRegistry` for SSR style extraction, `ConfigProvider` theme from branding (§8.2). Screens follow the Figma community file "Employee Leave Management" mapped onto antd (Layout + Sider nav, Card/Statistic balances, Table requests, Calendar holidays/team leave, Form + DatePicker.RangePicker apply, Drawer/Modal details); inventory, component mapping, tokens and breakpoints in [UI_GUIDELINES.md](UI_GUIDELINES.md). antd components are client components; data comes from server components or TanStack Query. Dark mode out of MVP.
 
 **Theming and modules.** See §8.2 and §8.3.
 
@@ -368,7 +369,7 @@ See USE_CASES §3.6 (diagram + transition/actor table). Implementation: `LeaveSt
 
 ### 8.2 Theming (Next.js, D-43; amends D-16)
 - Laravel exposes the effective brand at public `GET /api/v1/branding` (`name`, colours, `primary_contrast` computed in PHP by luminance, `logo_url`, `favicon_url`, enabled `modules`). Values are regex-validated hex on write and re-validated on read (fallback to default).
-- The Next root layout (server component) fetches it (`revalidate: BRANDING_REVALIDATE_SECONDS`, default 30, tag `branding`), re-validates the hex values again and renders `<AntdRegistry><ConfigProvider theme={{ cssVar: true, token: { colorPrimary, colorLink, colorInfo, borderRadius, fontFamily } }}>`; antd derives its palette and emits CSS variables, so there is no per-customer build. Token mapping and breakpoints: [UI_GUIDELINES.md](UI_GUIDELINES.md). `generateMetadata` sets `<title>` (brand name) and `icons` (favicon URL).
+- The Next root layout (server component) fetches it (`revalidate: BRANDING_REVALIDATE_SECONDS`, default 30, tag `branding`), re-validates the hex values again and renders `<AntdRegistry><ConfigProvider theme={{ token: { colorPrimary, colorLink, colorInfo, borderRadius, fontFamily } }}>` (antd v6 always emits CSS variables, D-45); antd derives its palette and emits CSS variables, so there is no per-customer build. Token mapping and breakpoints: [UI_GUIDELINES.md](UI_GUIDELINES.md). `generateMetadata` sets `<title>` (brand name) and `icons` (favicon URL).
 - Branding writes through the BFF call `revalidateTag('branding')` on the serving replica; other replicas pick changes up within the TTL.
 - Assets are served by `GET /branding/{asset}` → `Storage::disk(config('branding.disk'))->response($path)` (or the bundled default) with `Cache-Control: public, max-age=300` and ETag. Uploaded file names are `logo-{sha1}.{ext}`; URLs carry `?v=<sha1|default>`, so caching is safe. Nothing is baked into any image.
 - SVG uploads are **rejected** (stored-XSS risk).
@@ -409,17 +410,17 @@ Gating points (all four are required):
 | # | Factor | Implementation |
 |---|---|---|
 | I | Codebase | One repo, many deploys (one per customer). Images tagged by git SHA/semver. |
-| II | Dependencies | `composer.lock` and `web/package-lock.json` committed. PHP extensions declared in Dockerfile. No reliance on host tools (host has no PHP). |
+| II | Dependencies | `composer.lock` and `web/package-lock.json` committed (exact pins for `better-auth`, `antd`). PHP extensions declared in Dockerfile. No reliance on host tools (host has no PHP). |
 | III | Config | Everything via env (`.env` only in dev, never in image). `.env.example` lists every key. Branding defaults + licensed modules via env. Admin overrides in DB are *data*, not config. |
-| IV | Backing services | Postgres, Redis, SMTP, S3 (RustFS), Keycloak by URL/env (`DB_*`, `REDIS_*`, `MAIL_*`, `AWS_*`, `KEYCLOAK_*`). Swap without code change. |
+| IV | Backing services | Postgres (`lms`, and `lms_auth` for web via `AUTH_DATABASE_URL`), Redis, SMTP, S3 (RustFS), Keycloak by URL/env (`DB_*`, `AUTH_DATABASE_URL`, `REDIS_*`, `MAIL_*`, `AWS_*`, `KEYCLOAK_*`). Swap without code change. |
 | V | Build, release, run | CI builds an immutable image. Release = image + env. Caches (`config:cache` etc.) are built at container start. |
-| VI | Processes | Stateless: no server sessions (web session = encrypted cookie), cache/locks/queue in Redis, uploads on the shared S3 disk. No local state in prod containers, no sticky sessions. |
+| VI | Processes | Stateless processes: no Laravel sessions; web sessions/tokens in Postgres `lms_auth` (D-45), cache/locks/queue in Redis, uploads on the shared S3 disk. No local state in prod containers, no sticky sessions. |
 | VII | Port binding | Fully satisfied: the app (FrankenPHP/Octane `:8000`) and web (Next standalone `:3000`) are self-contained HTTP servers; nginx on 80 is the path router. |
 | VIII | Concurrency | Scale `nginx`, `web`, `app`, `worker`, `keycloak` horizontally. `scheduler` = 1 replica, tasks `onOneServer()` + `withoutOverlapping()` (Redis locks). See §3.1. |
 | IX | Disposability | Fast start. Octane drains workers on SIGTERM; `queue:work` finishes the current job on SIGTERM. |
 | X | Dev/prod parity | Same Dockerfile, same Postgres (17) and Redis (7) majors, same drivers, S3 API in dev too (RustFS). Only Mailpit and the Keycloak start mode (`start-dev` + realm import) differ. |
 | XI | Logs | `LOG_CHANNEL=stderr`, `LOG_STDERR_FORMATTER=Monolog\Formatter\JsonFormatter`. nginx access/error → stdout/stderr. No log files. |
-| XII | Admin processes | `docker compose run --rm app php artisan migrate --force`, `... lms:accrue-year 2027`, `... db:seed --class=DemoSeeder`. In prod: same image as a one-off job. |
+| XII | Admin processes | `docker compose run --rm app php artisan migrate --force`, `... lms:accrue-year 2027`, `... db:seed --class=DemoSeeder`; web: `docker compose run --rm web node scripts/auth-migrate.mjs`. In prod: same images as one-off jobs. |
 
 ### Environment variables (`.env.example` must contain all)
 
@@ -444,7 +445,7 @@ Gating points (all four are required):
 | `KEYCLOAK_BASE_URL` | `http://keycloak:8080` | **back-channel** URL used by app/worker (token exchange, userinfo, JWKS, Admin API) |
 | `KEYCLOAK_PUBLIC_URL` | `http://localhost:8081` | browser redirects and token issuer: expected `iss` = `{KEYCLOAK_PUBLIC_URL}/realms/{KEYCLOAK_REALM}` |
 | `KEYCLOAK_REALM` | `lms` | |
-| `KEYCLOAK_CLIENT_ID` | `lms-web` | app: the first-party BFF client; tokens with this `azp` pass `module:api` (D-43). The secret lives only in `web` (`AUTH_KEYCLOAK_SECRET`). |
+| `KEYCLOAK_CLIENT_ID` | `lms-web` | app: the first-party BFF client; tokens with this `azp` pass `module:api` (D-43). The secret lives only in `web` (`KEYCLOAK_CLIENT_SECRET`, D-45). |
 | `KEYCLOAK_ALLOWED_AUDIENCES` | `lms-web,lms-api-cli` | a JWT is accepted only if its `aud` (or `azp`) is in this list |
 | `KEYCLOAK_JWT_LEEWAY` | `30` | seconds of clock skew for `exp`/`nbf`/`iat` |
 | `KEYCLOAK_JWKS_CACHE_TTL` | `3600` | seconds, Redis |
@@ -465,26 +466,25 @@ Gating points (all four are required):
 
 | Var | Dev default | Notes |
 |---|---|---|
-| `APP_URL` | `http://localhost:8080` | public origin; Origin check for BFF CSRF, post-logout redirect |
-| `AUTH_URL` | `http://localhost:8080/auth` | Auth.js base URL (`basePath` `/auth`) |
-| `AUTH_SECRET` | (generate, `openssl rand -base64 32`) | **Secret**, identical on all web replicas (cookie encryption) |
-| `AUTH_TRUST_HOST` | `true` | behind nginx |
-| `AUTH_KEYCLOAK_ID`, `AUTH_KEYCLOAK_SECRET` | `lms-web`, `lms-web-dev-secret` | confidential client; **Secret**, regenerate per deployment |
-| `KEYCLOAK_PUBLIC_URL`, `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM` | `http://localhost:8081`, `http://keycloak:8080`, `lms` | browser-facing vs back-channel, same meaning as for app |
+| `APP_URL` | `http://localhost:8080` | public origin; Better Auth `baseURL` (callback `${APP_URL}/auth/callback/keycloak`), trusted origin, BFF Origin check, post-logout redirect |
+| `BETTER_AUTH_SECRET` | (generate, `openssl rand -base64 32`) | **Secret**, ≥ 32 random bytes, identical on all web replicas (cookie signing/encryption, token encryption at rest). Rotation: `BETTER_AUTH_SECRETS` (D-45) |
+| `AUTH_DATABASE_URL` | `postgres://lms:secret@postgres:5432/lms_auth` | Better Auth store, DB `lms_auth` (not Laravel's `lms`); own DB user in prod. **Secret** (contains the password) |
+| `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET` | `lms-web`, `lms-web-dev-secret` | confidential client; **Secret**, regenerate per deployment; the secret exists only in `web` |
+| `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM` | `http://keycloak:8080`, `lms` | discovery is fetched from the internal URL; Keycloak returns browser-facing URLs for authorization/end-session (D-45) |
 | `LMS_API_URL` | `http://nginx` | internal base URL of Laravel through nginx (BFF + server components) |
 | `BRANDING_REVALIDATE_SECONDS` | `30` | Next fetch cache TTL for `GET /api/v1/branding` |
-| `AUTH_SESSION_MAX_AGE` | `36000` | seconds; keep ≤ Keycloak SSO session max |
+| `AUTH_SESSION_MAX_AGE` | `36000` | Better Auth `session.expiresIn` in seconds; keep ≤ Keycloak SSO Session Max |
 | `PORT`, `HOSTNAME`, `NODE_ENV` | `3000`, `0.0.0.0`, `production` | |
 
 ## 10. Security
 
 | Concern | Control |
 |---|---|
-| AuthN web | BFF (D-43): Keycloak OIDC auth code (client `lms-web`, `state` + PKCE S256) run server-side by Auth.js in `web`. Tokens only in the encrypted HttpOnly SameSite=Lax cookie, never in browser JS. Every API call carries the access token to Laravel, which verifies it (`KeycloakJwtGuard`), provisions/syncs the user and checks `is_active`. Logout is RP-initiated (end-session with `id_token_hint`). Passwords, MFA, lockout and brute-force detection live in Keycloak. |
+| AuthN web | BFF (D-43, D-45): Keycloak OIDC auth code (client `lms-web`, `state` + `nonce` + PKCE S256, ID token verified against the JWKS) run server-side by Better Auth in `web`. Tokens stored in `lms_auth.account`, encrypted at rest; the browser holds only the HttpOnly SameSite=Lax session cookies, never a token. Every API call carries the access token to Laravel, which verifies it (`KeycloakJwtGuard`), provisions/syncs the user and checks `is_active`. Logout is RP-initiated (end-session with `id_token_hint`). Passwords, MFA, lockout and brute-force detection live in Keycloak. |
 | AuthN API | Bearer JWT (RS256) from Keycloak (client `lms-api-cli`, public + PKCE). Guard `keycloak-jwt` checks signature (JWKS cached in Redis, refetch on unknown `kid`), `iss`, `aud`/`azp` against `KEYCLOAK_ALLOWED_AUDIENCES`, `exp`/`nbf` with `KEYCLOAK_JWT_LEEWAY`. No app-issued tokens. Inactive user → 401. |
 | Roles | Keycloak realm roles are the RBAC authority; `users.role` (base role) and `users.is_admin` are caches refreshed on every login/API call. Roles change in the app only through UC-U6, by an `admin` (D-22, D-29). |
 | AuthZ | Role enum + **Policies** (`LeaveRequestPolicy`: `view, create, cancel, decide`; `UserPolicy` HR fields, `LeaveTypePolicy`, `HolidayPolicy`, `DepartmentPolicy`, `SettingsPolicy::updateWorkingWeek` → `hr_admin`; `SettingsPolicy::manageBranding`/`manageModules`, `UserPolicy::manageIdentity` (UC-U*) → `admin`, D-29). `Gate::before` is **not** used (HR must not approve their own requests). Every controller method calls `$this->authorize()` / `Gate::authorize()`. |
-| CSRF | Laravel: Bearer only, no cookies, so no CSRF surface. BFF: SameSite=Lax session cookie + `Origin` must equal the `APP_URL` origin on `POST/PUT/PATCH/DELETE` to `/bff/*`; Auth.js CSRF token on its own `/auth/*` POSTs; OIDC `state` + PKCE protect the callback. |
+| CSRF | Laravel: Bearer only, no cookies, so no CSRF surface. BFF: SameSite=Lax session cookie + `Origin` must equal the `APP_URL` origin on `POST/PUT/PATCH/DELETE` to `/bff/*`; Better Auth's own Origin check on its `/auth/*` POSTs; OIDC `state` + PKCE protect the callback. |
 | Rate limiting | `RateLimiter::for('api', 60/min by user id or IP)`, `RateLimiter::for('public', 300/min by client IP)` on `GET /api/v1/branding` with `X-RateLimit-*` / `Retry-After` headers (D-21). Credential brute-force protection is Keycloak's. |
 | Input | Form Requests on every write. Eloquent bindings only (no raw string SQL with input). Mass assignment via `$fillable`. |
 | Output | React escaping; no `dangerouslySetInnerHTML`. Brand colours injected only as validated hex CSS variables. Mail: Blade `{{ }}` escaping. |
@@ -527,6 +527,7 @@ Gating points (all four are required):
 - Seeders: `LeaveTypeSeeder` (CL/SL/EL/LWP, idempotent `updateOrCreate` by code) runs in all envs. `DemoSeeder` runs **only** when `APP_ENV=local|testing`: departments CE/IT/MH/EC/IC/CL/CH from the original, 2026+2027 holidays, and the four **dev users** that also exist in the dev Keycloak realm import (`docker/keycloak/realm-lms.json`): `alice` (`alice@example.test`, employee, IT, manager = bob), `bob` (`bob@example.test`, manager, IT), `carol` (`carol@example.test`, hr_admin, HR), `dave` (`dave@example.test`, employee + `admin`, IT, D-29). Local rows are seeded with `keycloak_sub = null` and are linked by verified email on first login (USE_CASES §3.10). Passwords exist only in Keycloak (dev value documented in the realm file, DEV ONLY). No other demo users are seeded, because users without a Keycloak account cannot log in.
 - Migration file order: departments → users (alter stock: drop `password`, `remember_token`, `email_verified_at`, `password_reset_tokens`; add `public_id`, `keycloak_sub`, LMS columns) → leave_types → holidays → leave_requests → leave_request_actions → leave_ledger_entries → settings → user_admin_audits.
 - Keycloak's schema lives in the separate `keycloak` database and is migrated by Keycloak itself on start.
+- Better Auth's schema (`user`, `session`, `account`, `verification`, `rateLimit`) lives in the separate `lms_auth` database and is migrated by the one-off `node scripts/auth-migrate.mjs` in the `web` image (owner: frontend, D-45), before web replicas roll out. Laravel never reads it.
 
 ## 13. CI/CD (GitHub Actions)
 
@@ -541,7 +542,7 @@ Two workflows (D-25, D-38, D-43). `.github/workflows/ci.yml` (`lint`, `openapi`,
 | `web-lint` | ubuntu-latest, `actions/setup-node` (Node 24, npm cache, `working-directory: web`) | `npm ci`, `npm run lint` (ESLint + `prettier --check`), `npm run typecheck` (`tsc --noEmit`), types fresh: `npm run gen:api` then `git diff --exit-code src/lib/api/schema.d.ts` | — |
 | `web-test` | same Node setup | `npm ci`, `npm test` (Vitest) | — |
 | `web-build` | same Node setup | `npm ci`, `npm run build` (`next build`, no env baked) | — |
-| `smoke` (package.yml) | ubuntu-latest | `cp .env.example .env` (+ runner `UID`/`GID`), `docker compose build`, `composer install` + `key:generate` in a one-off app container, `docker compose up -d --wait --scale app=2 --scale web=2` (all healthchecks incl. web, keycloak, rustfs, s3-init), `docker compose run --rm migrate` + `DemoSeeder`, `curl -fsS localhost:8080/healthz`, `curl -fsS localhost:8080/readyz`, `curl -fsS localhost:8080/api/v1/branding`, `curl -fsS localhost:8081/realms/lms/.well-known/openid-configuration`, Playwright e2e (`web/e2e`, pinned `mcr.microsoft.com/playwright` image, `--network host`, report uploaded as artifact), then always `docker compose down -v`. Dumps `docker compose logs` on failure. | `ci` |
+| `smoke` (package.yml) | ubuntu-latest | `cp .env.example .env` (+ runner `UID`/`GID`), `docker compose build`, `composer install` + `key:generate` in a one-off app container, `docker compose up -d --wait --scale app=2 --scale web=2` (all healthchecks incl. web, keycloak, rustfs, s3-init), `docker compose run --rm migrate` + `DemoSeeder`, `docker compose run --rm web node scripts/auth-migrate.mjs`, `curl -fsS localhost:8080/healthz`, `curl -fsS localhost:8080/readyz`, `curl -fsS localhost:8080/api/v1/branding`, `curl -fsS localhost:8081/realms/lms/.well-known/openid-configuration`, Playwright e2e (`web/e2e`, pinned `mcr.microsoft.com/playwright` image, `--network host`, report uploaded as artifact), then always `docker compose down -v`. Dumps `docker compose logs` on failure. | `ci` |
 | `push` (package.yml) | ubuntu-latest, `permissions: {contents: read, packages: write}`, matrix `app`/`nginx`/`web` | `docker/setup-qemu-action` (tags only), `docker/setup-buildx-action`, `docker/login-action` (ghcr.io, `${{ github.actor }}`, `GITHUB_TOKEN`), `docker/metadata-action` (tags `type=sha`, `type=ref,event=branch`, `type=semver` `{{version}}` + `{{major}}.{{minor}}`, `latest` on the default branch; label `org.opencontainers.image.licenses=MIT`), `docker/build-push-action` ×3 (`target: app-prod` → `ghcr.io/${{ github.repository }}/app`, `target: nginx` → `ghcr.io/${{ github.repository }}/nginx`, context `web/` target `runner` → `ghcr.io/${{ github.repository }}/web`). **Platforms:** `linux/amd64` on `main`; `linux/amd64,linux/arm64` on `v*` tags. `cache-from/to: type=gha` (scope per image). | `ci, smoke` |
 
 Image names are derived from `github.repository` and lowercased (`${GITHUB_REPOSITORY,,}`), which gives `ghcr.io/heyadityak/lms/app`, `/nginx` and `/web` for the `heyadityak/lms` repository. The test jobs use setup-php instead of the image for speed; the image itself is validated by `smoke` and `package`, and parity is kept on PHP 8.4, Postgres 17 and Redis 7 (D-10, D-25). No Keycloak image is built or published: customers run upstream `quay.io/keycloak/keycloak` and import/configure the documented realm (D-33).
@@ -557,7 +558,7 @@ Image names are derived from `github.repository` and lowercased (`${GITHUB_REPOS
 - Keycloak 26 server docs (hostname v2, clustering/caching, OIDC clients, user federation, themes): https://www.keycloak.org/documentation , https://www.keycloak.org/server/hostname , https://www.keycloak.org/server/caching
 - JWT validation: https://github.com/firebase/php-jwt
 - OAuth 2.0 for Browser-Based Applications (BFF pattern): https://datatracker.ietf.org/doc/draft-ietf-oauth-browser-based-apps/
-- Next.js (App Router, standalone output, `generateMetadata`, caching): https://nextjs.org/docs ; Auth.js (Keycloak provider, JWT sessions, refresh rotation): https://authjs.dev/ ; Auth.js maintenance status: https://github.com/nextauthjs/next-auth/discussions/13252
+- Next.js (App Router, standalone output, `generateMetadata`, caching): https://nextjs.org/docs ; Better Auth 1.7 (generic OAuth plugin, session management, database, cookies): https://better-auth.com/docs/plugins/generic-oauth , https://better-auth.com/docs/concepts/session-management , https://better-auth.com/docs/concepts/database ; Ant Design v6 migration and Next.js: https://ant.design/docs/react/migration-v6 , https://ant.design/docs/react/use-with-next
 - openapi-typescript / openapi-fetch: https://openapi-ts.dev/ ; TanStack Query: https://tanstack.com/query ; Ant Design: https://ant.design/docs/react/introduce , https://ant.design/docs/react/use-with-next , https://ant.design/docs/react/css-variables ; Figma reference: https://www.figma.com/community/file/1473575090164873432/employee-leave-management ; Playwright + axe: https://playwright.dev/docs/accessibility-testing
 - RFC 9457 Problem Details: https://www.rfc-editor.org/rfc/rfc9457 ; OpenAPI 3.1: https://spec.openapis.org/oas/v3.1.0 ; IETF Idempotency-Key draft: https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/
 - Leave ledger/LLD reference: https://techinterview.org/lld-employee-leave-management/

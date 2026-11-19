@@ -47,19 +47,19 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    browser([Browser]) -->|HTTPS, encrypted session cookie| lb
+    browser([Browser]) -->|HTTPS, HttpOnly session cookie| lb
     client([API client]) -->|HTTPS Bearer JWT| lb
 
     subgraph dep["Customer deployment (one per customer, D-01)"]
         lb["Ingress / load balancer<br/>TLS, HSTS<br/>no sticky sessions"]
         nginx["nginx × N (edge)<br/>nginx:stable-alpine<br/>path routing, security headers,<br/>HTTP proxy_pass, X-Request-Id"]
-        web["web × N<br/>Next.js standalone :3000 (node:24-alpine)<br/>pages (antd), Auth.js /auth/*,<br/>BFF /bff/api/* → /api/v1"]
+        web["web × N<br/>Next.js standalone :3000 (node:24-alpine)<br/>pages (antd v6), Better Auth /auth/*,<br/>BFF /bff/api/* → /api/v1"]
         app["app × N<br/>FrankenPHP + Octane worker mode :8000<br/>API only: /api/v1, middleware,<br/>actions, policies, Resources"]
         worker["worker × N<br/>queue:work redis"]
         sched["scheduler × 1<br/>schedule:work<br/>onOneServer + withoutOverlapping"]
-        oneoff["one-off job<br/>migrate --force<br/>lms:accrue-year"]
+        oneoff["one-off jobs<br/>migrate --force, lms:accrue-year<br/>web: auth-migrate (lms_auth)"]
         kc["keycloak × N<br/>Keycloak 26, realm lms<br/>clients lms-web, lms-api-cli, lms-admin"]
-        pg[("PostgreSQL 17<br/>db lms: domain tables, settings,<br/>user_admin_audits, failed_jobs<br/>db keycloak: Keycloak tables")]
+        pg[("PostgreSQL 17<br/>db lms: domain tables, settings,<br/>user_admin_audits, failed_jobs<br/>db keycloak: Keycloak tables<br/>db lms_auth: Better Auth sessions, tokens")]
         redis[("Redis 7<br/>cache, JWKS, admin token,<br/>locks, rate limits, idempotency, queue")]
     end
 
@@ -71,7 +71,8 @@ flowchart LR
     nginx -->|"/ (WEB_UPSTREAM web:3000)"| web
     nginx -->|"/api/, /healthz, /readyz, /branding/<br/>(APP_UPSTREAM app:8000)"| app
     web -->|"Bearer JWT via LMS_API_URL (http://nginx)"| nginx
-    web -->|"token exchange, refresh<br/>(KEYCLOAK_BASE_URL)"| kc
+    web -->|"discovery, token exchange, refresh<br/>(KEYCLOAK_BASE_URL)"| kc
+    web -->|"sessions, OAuth state, tokens<br/>(AUTH_DATABASE_URL, db lms_auth)"| pg
     app -->|SQL| pg
     app -->|"cache, throttle, jobs"| redis
     app -->|"put / stream logo, favicon"| s3
@@ -87,10 +88,10 @@ flowchart LR
 ```
 
 Notes:
-- `web` is the Next.js frontend and BFF (D-43): browsers only talk to `web` (pages, `/auth/*`, `/bff/*`) and to `/branding/*` assets; tokens stay in `web`'s encrypted session cookie and are attached server-side when the BFF calls `/api/v1` back through nginx. Third-party API clients call `/api/v1` directly.
+- `web` is the Next.js frontend and BFF (D-43): browsers only talk to `web` (pages, `/auth/*`, `/bff/*`) and to `/branding/*` assets; tokens stay server-side in the `lms_auth` database (Better Auth, D-45; the browser only has an HttpOnly session cookie) and are attached when the BFF calls `/api/v1` back through nginx. Third-party API clients call `/api/v1` directly.
 - Every PHP process runs the **same `app` image** (FrankenPHP, D-09/D-27) with a different command: web = `php artisan octane:frankenphp` on `:8000` (or classic FrankenPHP with `APP_SERVER_MODE=classic`), worker = `queue:work`, scheduler = `schedule:work`, one-off = `migrate`. `nginx`, `web` and `keycloak` are separate images.
 - NGINX is the edge reverse proxy: TLS in prod (or the platform LB), static files, security headers, `proxy_pass` over HTTP. FrankenPHP's own auto-HTTPS is off (`SERVER_NAME=:8000`).
-- `web`, `app` and `worker` are stateless: no server sessions (the web session is an encrypted cookie), no local uploads or cache. Any replica serves any request, so no sticky sessions.
+- `web`, `app` and `worker` are stateless: no per-process session state (web sessions live in Postgres `lms_auth`, D-45), no local uploads or cache. Any replica serves any request, so no sticky sessions.
 - Keycloak uses its own `keycloak` database on the same Postgres server (D-20). The browser reaches it at `KEYCLOAK_PUBLIC_URL` (issuer); `web` and `app` use `KEYCLOAK_BASE_URL` for back-channel calls.
 - Health: nginx `/nginx-health`; web `:3000/bff/healthz` (no I/O); app (served by Octane, image `HEALTHCHECK` curls `:8000/healthz`) `/healthz` (no I/O) and `/readyz` (Postgres + Redis, **not** Keycloak, to avoid cascading restarts); Keycloak `/health/ready`.
 
@@ -106,7 +107,7 @@ flowchart LR
 
     subgraph custA["Customer A (own namespace / VM)"]
         envA["env: APP_BRAND_NAME=Acme Leave<br/>BRAND_PRIMARY_COLOR, BRAND_ACCENT_COLOR<br/>MODULES_ENABLED=holidays,reports,notifications,user_management<br/>LEAVE_YEAR_START_MONTH=4<br/>KEYCLOAK_BASE_URL=https://sso.acme.example<br/>BRANDING_DISK=s3, AWS_ENDPOINT, AWS_BUCKET"]
-        secA["secrets: APP_KEY, DB_PASSWORD, REDIS_PASSWORD,<br/>MAIL_PASSWORD, AWS_SECRET_ACCESS_KEY,<br/>KEYCLOAK_ADMIN_CLIENT_SECRET, KC_DB_PASSWORD<br/>web: AUTH_SECRET, AUTH_KEYCLOAK_SECRET"]
+        secA["secrets: APP_KEY, DB_PASSWORD, REDIS_PASSWORD,<br/>MAIL_PASSWORD, AWS_SECRET_ACCESS_KEY,<br/>KEYCLOAK_ADMIN_CLIENT_SECRET, KC_DB_PASSWORD<br/>web: BETTER_AUTH_SECRET, KEYCLOAK_CLIENT_SECRET,<br/>AUTH_DATABASE_URL"]
         relA["release: migrate --force (one-off)<br/>then roll app / web / worker / scheduler"]
         runA["nginx + web×N (Next) + app×N (FrankenPHP)<br/>+ worker×N + scheduler×1"]
         kcA["Keycloak cluster A<br/>upstream image, realm lms imported"]
@@ -172,12 +173,13 @@ flowchart TB
     n2 -->|"/api/ :8000"| a3["app #N"]
 
     subgraph shared["Shared state (the only stateful tier)"]
-        pg[("Postgres 17<br/>lms + keycloak DBs")]
+        pg[("Postgres 17<br/>lms + keycloak + lms_auth DBs")]
         redis[("Redis 7<br/>cache · JWKS · locks ·<br/>throttle · idempotency · queue")]
         s3[("RustFS (S3-compatible)<br/>branding assets")]
     end
 
     a1 & a2 & a3 --> pg
+    wb1 & wb2 -->|lms_auth| pg
     a1 & a2 & a3 --> redis
     a1 & a2 & a3 --> s3
     kc1 & kc2 --> pg
@@ -195,7 +197,7 @@ flowchart TB
 | Tier | Scale | Why it is safe |
 |---|---|---|
 | nginx | N | Stateless edge proxy to `WEB_UPSTREAM` and `APP_UPSTREAM` over HTTP (no FastCGI), re-resolved via `NGINX_RESOLVER`. |
-| web (Next.js + BFF) | N (CPU / SSR latency) | Session is the encrypted cookie (shared `AUTH_SECRET`), no server state; per-replica fetch cache holds only public branding (≤ 30 s). |
+| web (Next.js + BFF) | N (CPU / SSR latency) | Sessions, OAuth state, tokens and auth rate limits in Postgres `lms_auth` (Better Auth, D-45), 5-min JWE cookie cache readable by any replica (shared `BETTER_AUTH_SECRET`); per-replica fetch cache holds only public branding (≤ 30 s). |
 | app (FrankenPHP + Octane) | N (CPU / latency); `OCTANE_WORKERS` per replica, recycled after `OCTANE_MAX_REQUESTS` | Bearer-only (no sessions); cache, JWKS, admin token, idempotency keys in Redis; uploads on RustFS. `Settings` cache invalidated in Redis, so every replica sees changes on the next request. |
 | worker | N (queue depth) | Redis queue pop is atomic. SIGTERM finishes the current job. |
 | scheduler | 1 (extra replicas harmless) | `onOneServer()` takes a Redis atomic lock per run; `withoutOverlapping()` stops a long accrual overlapping itself. Accrual is idempotent anyway (unique ledger index). |

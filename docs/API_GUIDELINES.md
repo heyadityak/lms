@@ -46,7 +46,7 @@ Laravel API Resources, always wrapped:
 
 | Param | Example | Rule |
 |---|---|---|
-| `page[number]` | `page[number]=2` | 1-based, default 1. |
+| `page[number]` | `page[number]=2` | 1-based, default 1, **max 10000** (422 above, D-46). |
 | `page[size]` | `page[size]=50` | default 25, **max 100** (422 above). |
 | `filter[...]` | `filter[status]=pending&filter[from]=2026-12-01&filter[to]=2026-12-31` | Only filters documented per endpoint. Unknown filter ⇒ 422 `VALIDATION_FAILED`. Comma = OR: `filter[status]=pending,approved`. |
 | `sort` | `sort=-start_date,created_at` | Comma list, `-` = descending. Only documented fields. |
@@ -83,6 +83,8 @@ Every 4xx/5xx from `/api/v1` is `application/problem+json`:
 
 - `type` is a stable URN (`urn:lms:problem:<slug>`), the same in every white-label deployment. `code` is the stable machine code clients switch on; `title` and `detail` are human text and may change.
 - `errors` (field → messages) is present on `422`.
+- Free-text fields (reason, handover note, comments, notes, names) use the `PlainText` rule: control characters other than `\t`, `\n`, `\r`, and invalid UTF-8, are rejected with 422 `VALIDATION_FAILED` (D-46).
+- Every 404 uses the same generic `detail` ("The requested resource was not found.") whether the id does not exist, is not visible to the caller, or the module is off, so responses cannot be used to probe ids (D-46).
 - `request_id` echoes `X-Request-Id` for support.
 - Rendered centrally in `bootstrap/app.php` `withExceptions()` for requests that match `api/*`: `ValidationException` → 422, `AuthenticationException` → 401, `AuthorizationException` → 403, `ModelNotFoundException`/`NotFoundHttpException` → 404, `InvalidTransition` → 409, `ThrottleRequestsException` → 429, domain `LeaveRuleViolation` (carries `code`) → 422. Never leak stack traces (`APP_DEBUG` ignored for the API).
 
@@ -128,7 +130,7 @@ The Next.js frontend (`web` container, same origin) is the only browser client. 
 
 | Step | Rule |
 |---|---|
-| Sign-in | Auth.js (`basePath: /auth`) runs the auth code + PKCE flow with the confidential client `lms-web`; tokens are kept in the encrypted, HttpOnly, SameSite=Lax session cookie. |
+| Sign-in | Better Auth (`basePath: /auth`, generic OAuth plugin) runs the auth code + PKCE flow with the confidential client `lms-web`; tokens stay server-side in the `lms_auth` database, the browser gets only the HttpOnly, SameSite=Lax session cookie (D-45). |
 | Calls | Browser → `/bff/api/{path}` (same origin, cookie) → BFF route handler → `{LMS_API_URL}/api/v1/{path}` with `Authorization: Bearer`. Same paths as this spec, so one `openapi-fetch` client works with base URL `/bff/api` (browser) or `{LMS_API_URL}/api/v1` (server components). |
 | Forwarded | Request: `Accept`, `Content-Type`, `Idempotency-Key`, `X-Forwarded-For/-Proto/-Host`, body streamed. Never `Cookie`. Response: status + body unchanged, headers `Content-Type`, `Content-Disposition`, `Location`, `Retry-After`, `X-RateLimit-*`, `Idempotent-Replayed`, `X-Request-Id`, `WWW-Authenticate`. |
 | No/expired session | BFF answers `401 application/problem+json` `UNAUTHENTICATED` (same `Problem` shape). A Laravel 401 also clears the session cookie; the client restarts sign-in. |
@@ -140,7 +142,7 @@ The Next.js frontend (`web` container, same origin) is the only browser client. 
 - OAuth 2.0 / OIDC with **Keycloak** (D-20). Clients get an access token from Keycloak (client `lms-api-cli`, auth code + PKCE; discovery at `{KEYCLOAK_PUBLIC_URL}/realms/lms/.well-known/openid-configuration`) and send `Authorization: Bearer <jwt>`. The app has no token endpoints.
 - The guard checks RS256 signature (JWKS cached in Redis), `iss` (`{KEYCLOAK_PUBLIC_URL}/realms/lms`), `aud`/`azp` in `KEYCLOAK_ALLOWED_AUDIENCES` (`lms-web,lms-api-cli`), `exp`/`nbf` with `KEYCLOAK_JWT_LEEWAY`. User is provisioned/synced from claims on every call.
 - Each operation in the spec has `x-roles` (realm roles allowed to call it at all). Every user has exactly one base role (`employee`, `manager`, `hr_admin`); `admin` is an additional realm role for branding, modules and identity admin (D-29). Fine-grained rules (direct manager, not own request) are Policies and give **403**.
-- Visibility: lists only return what the caller may see (employee: own; manager: own + direct reports; hr_admin: all). Single-resource reads of something invisible return **404** (`NOT_FOUND`), not 403, so ids cannot be probed. Actions on a visible resource that the caller may not perform return **403**.
+- Visibility: lists only return what the caller may see (employee: own; manager: own + direct reports; hr_admin: all). Single-resource reads **and actions** (`approve`, `reject`, `cancel`) on something invisible return **404** (`NOT_FOUND`), not 403, so ids cannot be probed. Actions on a visible resource that the caller may not perform return **403** (D-46).
 
 ## 6. Reports (content negotiation)
 

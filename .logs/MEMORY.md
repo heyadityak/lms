@@ -16,6 +16,7 @@ Read this first, then `decisions.md`, then the docs it points to.
 - 2026-11-19 (phase 6): Leave core done: WorkingDayCalculator/LeaveBalanceService/ApproverResolver, Submit/Approve/Reject/Cancel (row locks, 23P01 backstop, ledger debit/reversal), LeaveRequestPolicy, `/api/v1` me/balances/leave-requests/approvals/leave-types/holidays, Blade dashboard/apply/my requests/approvals/holidays, `active` middleware, provisioner last_login_at + prorated initial grant; 110 tests green, live API + web flow verified (D-42).
 - 2026-11-19 (phase 7): QA done: 164 tests green, 8 known bugs open (`task test:known-bugs`), see phase-7 log "Bugs found" for domain (D-44).
 - 2026-11-19 (D-43): **Redesign: Next.js frontend (`web/`, antd v5, Auth.js BFF, Figma "Employee Leave Management") + API-only Laravel.** New endpoints `GET /api/v1/branding` (public) and `POST /api/v1/leave-requests/preview`. BUILD_PLAN phases 8–17 rewritten. Open user decisions: Auth.js beta, antd v5 vs v6, Figma license.
+- 2026-11-19 (D-45/D-46): **User chose Better Auth + antd v6.** Better Auth 1.7.26 (genericOAuth → Keycloak via internal discovery URL) with its own Postgres DB `lms_auth` (`AUTH_DATABASE_URL`, one-off `node scripts/auth-migrate.mjs`, owner frontend); its no-DB mode keeps per-process state, so not used. antd v6 (no React 19 patch, registry kept, single `@ant-design/cssinjs`). D-46: approver must be manager/hr_admin, `page[number]` ≤ 10000, `PlainText`, generic 404. Open: Figma license.
 
 ## Run logs
 | Date | Agent | File | Summary |
@@ -33,6 +34,7 @@ Read this first, then `decisions.md`, then the docs it points to.
 | 2026-11-19 | architect | [2026-11-19-architect-frontend.md](2026-11-19-architect-frontend.md) | D-43: Next.js + BFF, Laravel API-only, antd + Figma UI_GUIDELINES, public branding + leave preview endpoints, docs/diagrams/AGENTS/BUILD_PLAN updated; spec + Mermaid validated. |
 | 2026-11-19 | platform | [2026-11-19-phase3-platform.md](2026-11-19-phase3-platform.md) | Phase 3: Keycloak realm, web OIDC login + RP logout, JWT guard `keycloak-jwt` + JWKS cache (rate-limited refetch), provisioning/role sync, users identity-column migration; live stack verified (scale app=3, Admin API create/delete); 50 tests green (D-39). |
 | 2026-11-19 | qa | [2026-11-19-phase7-qa.md](2026-11-19-phase7-qa.md) | Phase 7: 54 new tests (rules edges, full 409 matrix, RBAC, openapi contract incl. errors/pagination, real idempotency, process-based races, Octane identity, JWT/DOJ probes); 164 green + 8 known-bug excluded; Redis test DBs 10–13 (D-44). |
+| 2026-11-19 | architect | [2026-11-19-architect-auth-antd6.md](2026-11-19-architect-auth-antd6.md) | D-45: Better Auth (Postgres `lms_auth`, Keycloak discovery split) + antd v6 across SYSTEM_DESIGN/AGENTS/UI_GUIDELINES/diagrams/frontend agent/BUILD_PLAN; D-46 phase-7 conventions (approver role, PageNumber max, PlainText, generic 404); spec + Mermaid validated. |
 
 ## Open questions (awaiting user)
 1. ~~Leave year~~ Resolved by D-26 (`LEAVE_YEAR_START_MONTH`, default 1). Confirm env-only (not admin-editable) is acceptable.

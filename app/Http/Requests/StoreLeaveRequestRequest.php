@@ -10,7 +10,7 @@ use App\Rules\PlainText;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
-/** Shapes + V9 only; business rules V1–V8 are SubmitLeaveRequest's. Client-sent `days` is ignored (§3.3.6). */
+/** Shapes + V9 only (also the preview body, D-43); business rules V1–V8 are LeaveRequestValidator's. Client-sent `days` is ignored (§3.3.6). */
 final class StoreLeaveRequestRequest extends FormRequest
 {
     public function authorize(): bool

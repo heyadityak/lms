@@ -11,6 +11,7 @@ use App\Exceptions\LeaveRuleViolation;
 use App\Models\LeaveRequest;
 use App\Models\User;
 use App\Services\LeaveBalanceService;
+use App\Services\LeaveRequestValidator;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 
@@ -29,7 +30,7 @@ final class ApproveLeaveRequest
 
             $type = $locked->leaveType;
             $year = $locked->leaveYear();
-            SubmitLeaveRequest::assertNoOverlap($locked->user, $locked->start_date, $locked->end_date, $locked->id);
+            LeaveRequestValidator::assertNoOverlap($locked->user, $locked->start_date, $locked->end_date, $locked->id);
             if ($type->tracks_balance) {
                 $available = $this->balances->available($locked->user, $type, $year, $locked->id);
                 if ($locked->days > $available) {

@@ -21,7 +21,7 @@ Route::middleware('module:api')->group(function (): void {
 Route::get('/v1/branding', [BrandingController::class, 'show'])->middleware('throttle:public')->name('api.v1.branding');
 
 // /api/v1: module gate (404; the first-party BFF passes, D-43) → Keycloak Bearer JWT (401, D-20) → `active` (401) → Redis rate limit (X-RateLimit-*, 429).
-// `idempotent` on POST /leave-requests (+ POST /admin/users in phase 9) only.
+// `idempotent` on POST /leave-requests (not /preview, D-43) (+ POST /admin/users in phase 9) only.
 Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-jwt', 'active', 'throttle:api'])->group(function (): void {
     Route::get('/me', [MeController::class, 'show'])->name('me');
     Route::get('/me/balances', [MeController::class, 'balances'])->name('me.balances');
@@ -32,6 +32,7 @@ Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-j
 
     Route::get('/leave-requests', [LeaveRequestController::class, 'index'])->name('leave-requests.index');
     Route::post('/leave-requests', [LeaveRequestController::class, 'store'])->middleware('idempotent')->name('leave-requests.store');
+    Route::post('/leave-requests/preview', [LeaveRequestController::class, 'preview'])->name('leave-requests.preview');
     Route::get('/leave-requests/{leaveRequest}', [LeaveRequestController::class, 'show'])->name('leave-requests.show');
     Route::post('/leave-requests/{leaveRequest}/approve', [ApprovalController::class, 'approve'])->name('leave-requests.approve');
     Route::post('/leave-requests/{leaveRequest}/reject', [ApprovalController::class, 'reject'])->name('leave-requests.reject');

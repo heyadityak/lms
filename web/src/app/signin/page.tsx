@@ -1,13 +1,14 @@
-import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { getSession } from '@/auth';
 import { SignInCard } from '@/components/SignInCard';
+import { loadMe } from '@/lib/me';
 import { getBranding } from '@/theme/branding';
 
 export const metadata = { title: 'Sign in' };
 
 export default async function SignInPage() {
-    if (await getSession(await headers()).catch(() => null)) redirect('/');
+    // Same check as the app shell. A session cookie getSession would accept but GET /me
+    // rejects must stay on this page, or the browser loops with the protected route.
+    if (await loadMe()) redirect('/');
     const brand = await getBranding();
 
     return (

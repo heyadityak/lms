@@ -116,6 +116,9 @@ export function ApplyLeaveModal({ open, onClose }: { open: boolean; onClose: () 
             footer={null}
             width={720}
             destroyOnHidden
+            // The zoom fade keeps the dialog under 4.5:1 until it finishes. Open at full opacity.
+            transitionName=""
+            maskTransitionName=""
             styles={{
                 container: { padding: 0, overflow: 'hidden' },
                 header: { background: FIGMA.navy, padding: '16px 32px', margin: 0 },

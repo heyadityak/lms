@@ -25,6 +25,10 @@ Read this first, then `decisions.md`, then the docs it points to.
 - 2026-11-22 (phase 17): Done. PHPUnit 211 passed. Playwright 4 passed (`npm run e2e`): axe clean, branding, Alice applies and Bob approves, holidays module off then restored. Smoke runs `npx playwright test --config=e2e/playwright.config.ts` with `PLAYWRIGHT_BASE_URL`. Open: Figma license; `GET /leave-types` 422 is not in the spec; identity list/detail are not audited.
 - 2026-11-22 (phase 18): UC-S4 daily reminder. `lms:remind-pending-approvals` at 08:00 `APP_TIMEZONE`. One mail per manager or hr_admin with a pending inbox item. `approval_reminders` unique `(user_id, reminded_on)` stops a second send the same day. Notifications module off sends nothing. PHPUnit 214. Not committed.
 - 2026-11-22 (phase 19): Confidential client `lms-web` has Direct Access Grants on (D-52) so the BFF can call the token endpoint. Public clients unchanged. Running dev realm updated in place (`kcadm`); user count stayed 4. Password grant as alice succeeded. Not committed. Frontend still redirects to Keycloak until the welcome page is built.
+- 2026-11-22 (a11y): Sign-in redirects home only when `loadMe()` can call `GET /me`. A session cookie with no usable token stays on `/signin` instead of looping with `/`. Apply Leave opens with no zoom fade so `#dates_extra` is opaque for axe (4.5:1). Playwright a11y + leave-approval passed against localhost:8080. Not committed.
+- 2026-11-22 (departments/locations): Both admin pages 500'd because the phase 19 migration was pending (`department_leave_quotas` and `locations` missing). `migrate --force` applied it (and the pending approval-reminders migration). Pages load. PHPUnit filter 3 passed. No code change.
+- 2026-11-22 (audit logs): Not a code bug. `GET /api/v1/audit-logs` is 200 for hr_admin (403 for an employee). `/admin/audit-logs` lists the rows. Earlier 500s were `relation "audit_logs" does not exist` before the phase 19 migration. No code change.
+- 2026-11-22 (approvals): Not a code bug. Manager and hr_admin inbox, detail drawer, and delegation page render. Approve of a direct report passes PHPUnit. A manager inbox reads `approval_delegations`, which the same pending phase 19 migration creates. No code change.
 
 ## Run logs
 | Date | Agent | File | Summary |
@@ -62,7 +66,12 @@ Read this first, then `decisions.md`, then the docs it points to.
 | 2026-11-22 | architect | [2026-11-22-phase19-architect.md](2026-11-22-phase19-architect.md) | Phase 19 contract. D-53–D-56 and D-58. OpenAPI paths for files, calendar, delegation, quotas, locations, audit. |
 | 2026-11-22 | frontend | [2026-11-22-phase19-frontend.md](2026-11-22-phase19-frontend.md) | Team calendar, delegation, locations, audit log. Vitest 61. Browser not checked. |
 | 2026-11-22 | domain | [2026-11-22-phase19-domain.md](2026-11-22-phase19-domain.md) | UC-E10–E14, UC-M5–M7, UC-H10–H15. PHPUnit 230. Preview and report day schemas still multipleOf 0.5. |
+| 2026-11-22 | qa | [2026-11-22-phase19-qa.md](2026-11-22-phase19-qa.md) | Audit, departments, locations, approvals. PHPUnit 4 and Playwright 8 passed. |
 | 2026-11-22 | architect | [2026-11-22-custom-login-architect.md](2026-11-22-custom-login-architect.md) | D-52: welcome page posts credentials to the BFF. No Keycloak login redirect. |
+| 2026-11-22 | frontend | [2026-11-22-frontend-a11y.md](2026-11-22-frontend-a11y.md) | Broke the `/signin` ↔ `/` loop when the session cookie is not usable. Apply dialog opens opaque so the date hint passes axe. |
+| 2026-11-22 | domain | [2026-11-22-departments-locations.md](2026-11-22-departments-locations.md) | Departments and locations 500'd on a pending phase 19 migration. Migrated. No code change. |
+| 2026-11-22 | domain | [2026-11-22-audit-logs.md](2026-11-22-audit-logs.md) | Audit list and page work. Earlier 500 was a missing table. No code change. |
+| 2026-11-22 | domain | [2026-11-22-approvals.md](2026-11-22-approvals.md) | Approvals page works for manager and hr_admin. No code change. |
 
 ## Open questions (awaiting user)
 1. ~~Leave year~~ Resolved by D-26 (`LEAVE_YEAR_START_MONTH`, default 1). Confirm env-only (not admin-editable) is acceptable.

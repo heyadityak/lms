@@ -38,7 +38,7 @@ describe('AppShell', () => {
         expect(screen.getByRole('link', { name: 'Leaves' })).toBeTruthy();
         expect(screen.queryByRole('link', { name: 'Approvals' })).toBeNull();
         expect(screen.queryByRole('link', { name: 'Holidays' })).toBeNull();
-        expect(screen.getByRole('button', { name: 'User menu for Alice' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'A Alice, User menu for Alice' })).toBeTruthy();
     });
 
     it('shows approvals to a manager', () => {

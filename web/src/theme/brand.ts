@@ -58,6 +58,9 @@ export function themeFromBranding(branding: Partial<Branding> | null | undefined
             colorSuccess: hex(branding?.accent_color, DEFAULT_BRANDING.accent_color),
             colorTextHeading: FIGMA.heading,
             colorTextSecondary: FIGMA.text,
+            // Description and placeholder greys from the default palette miss 4.5:1 on the page background.
+            colorTextDescription: FIGMA.text,
+            colorTextPlaceholder: FIGMA.text,
             colorBorderSecondary: FIGMA.subtle,
             colorBgLayout: FIGMA.page,
             borderRadius: 4,

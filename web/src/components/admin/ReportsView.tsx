@@ -1,17 +1,7 @@
 'use client';
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import {
-    Button,
-    DatePicker,
-    Empty,
-    Form,
-    InputNumber,
-    Segmented,
-    Select,
-    Space,
-    Table,
-} from 'antd';
+import { Button, Empty, Form, InputNumber, Segmented, Select, Space, Table } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { useState } from 'react';
@@ -19,6 +9,7 @@ import { browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
 import { downloadCsv } from '@/lib/csv';
 import { useAllLeaveTypes, useDepartments } from '@/lib/queries';
 import { usePager } from '@/lib/table';
+import { DateRangeField } from '../DateRangeField';
 import { PageTitle, ProblemAlert, STATUS_LABEL, StatusTag, fmtDate } from '../ui';
 
 type Status = Schemas['LeaveStatus'];
@@ -165,7 +156,11 @@ function LeaveRequestsReport() {
             >
                 <Space wrap align="end">
                     <Form.Item name="range" label="Dates" extra="Format YYYY-MM-DD">
-                        <DatePicker.RangePicker format="YYYY-MM-DD" />
+                        <DateRangeField
+                            startLabel="Start date"
+                            endLabel="End date"
+                            format="YYYY-MM-DD"
+                        />
                     </Form.Item>
                     <FilterSelects />
                     <Form.Item name="status" label="Status">

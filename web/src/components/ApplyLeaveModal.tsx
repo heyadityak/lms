@@ -1,24 +1,13 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-    Alert,
-    App,
-    Button,
-    Checkbox,
-    DatePicker,
-    Form,
-    Input,
-    Modal,
-    Radio,
-    Space,
-    Spin,
-} from 'antd';
+import { Alert, App, Button, Checkbox, Form, Input, Modal, Radio, Space, Spin } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
 import { useLeaveTypes } from '@/lib/queries';
 import { FIGMA } from '@/theme/brand';
+import { DateRangeField } from './DateRangeField';
 import { ProblemAlert, fmtDays } from './ui';
 
 type Body = Schemas['LeaveRequestCreate'];
@@ -209,7 +198,9 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                     extra="Format YYYY-MM-DD"
                     rules={[{ required: true, message: 'Choose the first and last day' }]}
                 >
-                    <DatePicker.RangePicker
+                    <DateRangeField
+                        startLabel="From"
+                        endLabel="To"
                         format="YYYY-MM-DD"
                         placeholder={['From', 'To']}
                         disabledDate={(d) => (minDate ? d.isBefore(minDate, 'day') : false)}

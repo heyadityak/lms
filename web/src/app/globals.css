@@ -39,10 +39,13 @@
     color: var(--lms-subnav-accent, #3a5fbe);
 }
 
-.lms-admin-subnav a[aria-current='page'] {
-    color: var(--lms-subnav-accent, #3a5fbe);
+/* Current tab: weight, fill, and bar. Text stays the dark heading colour.
+   Primary text on the generated primary tint can miss 4.5:1. */
+.lms-admin-subnav a[aria-current='page'],
+.lms-admin-subnav a[aria-current='page']:hover {
+    color: var(--lms-subnav-text, #44477b);
     font-weight: 700;
-    background: var(--lms-subnav-accent-bg, #e8eef8);
+    background: #f2f4f8;
 }
 
 .lms-admin-subnav a[aria-current='page']::after {
@@ -62,4 +65,24 @@
 
 .lms-table-row {
     cursor: pointer;
+}
+
+/* Today's number is primary-coloured on the primary tint, which can miss 4.5:1.
+   Keep the day obvious with weight and the cell fill; force a light fill and dark text. */
+.lms-holiday-calendar .ant-picker-calendar-date-today,
+.lms-holiday-calendar .ant-picker-cell-selected .ant-picker-calendar-date {
+    background: #f2f4f8 !important;
+}
+
+.lms-holiday-calendar .ant-picker-calendar-date-today .ant-picker-calendar-date-value,
+.lms-holiday-calendar .ant-picker-cell-selected .ant-picker-calendar-date-value {
+    color: #14162b !important;
+    font-weight: 700;
+}
+
+/* Days outside the shown month inherit disabled grey (#bfbfbf on white, ~1.8:1). */
+.lms-holiday-calendar
+    .ant-picker-cell:not(.ant-picker-cell-in-view)
+    .ant-picker-calendar-date-value {
+    color: #44477b !important;
 }

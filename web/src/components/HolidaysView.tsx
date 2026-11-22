@@ -1,14 +1,22 @@
 'use client';
 
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
-import { Button, Calendar, Col, Empty, Listy, Row, Skeleton, Space, Typography } from 'antd';
+import {
+    Button,
+    Calendar,
+    Col,
+    Empty,
+    Radio,
+    Row,
+    Select,
+    Skeleton,
+    Space,
+    Typography,
+} from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useState } from 'react';
-import type { Schemas } from '@/lib/api/client';
 import { useHolidays } from '@/lib/queries';
 import { PageTitle, ProblemAlert, fmtDate } from './ui';
-
-type Holiday = Schemas['Holiday'];
 
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
@@ -68,9 +76,18 @@ export function HolidaysView() {
             <Row gutter={[30, 30]}>
                 <Col xs={24} lg={16}>
                     <Calendar
+                        className="lms-holiday-calendar"
                         value={cursor}
                         onChange={onCursor}
                         onPanelChange={onCursor}
+                        headerRender={({ value, type, onChange, onTypeChange }) => (
+                            <HolidayCalendarHeader
+                                value={value}
+                                type={type}
+                                onChange={onChange}
+                                onTypeChange={onTypeChange}
+                            />
+                        )}
                         cellRender={(date, info) => {
                             if (info.type !== 'date') return info.originNode;
                             const names = byDate.get(date.format('YYYY-MM-DD'));
@@ -101,19 +118,21 @@ export function HolidaysView() {
                     ) : list.length === 0 ? (
                         <Empty description={`No holidays in ${year}`} />
                     ) : (
-                        <section aria-label={`Holidays in ${year}`}>
-                            <Listy<Holiday>
-                                items={list}
-                                rowKey="id"
-                                height={Math.min(480, list.length * 56)}
-                                itemRender={(h) => (
-                                    <div style={{ padding: '8px 0' }}>
+                        <div
+                            role="region"
+                            aria-label={`Holidays in ${year}`}
+                            tabIndex={0}
+                            style={{ maxHeight: 480, overflowY: 'auto' }}
+                        >
+                            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                                {list.map((h) => (
+                                    <li key={h.id} style={{ padding: '8px 0' }}>
                                         <strong>{fmtDate(h.date)}</strong>
                                         <div>{h.name}</div>
-                                    </div>
-                                )}
-                            />
-                        </section>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
                     )}
                 </Col>
             </Row>
@@ -123,4 +142,62 @@ export function HolidaysView() {
 
 function clampYear(year: number): number {
     return Math.min(MAX_YEAR, Math.max(MIN_YEAR, year));
+}
+
+const YEARS = Array.from({ length: MAX_YEAR - MIN_YEAR + 1 }, (_, i) => {
+    const year = MIN_YEAR + i;
+    return { value: year, label: String(year) };
+});
+
+const MONTHS = Array.from({ length: 12 }, (_, month) => ({
+    value: month,
+    label: dayjs().month(month).format('MMMM'),
+}));
+
+/** Month and year controls with visible labels. The stock header selects are unlabeled. */
+function HolidayCalendarHeader({
+    value,
+    type,
+    onChange,
+    onTypeChange,
+}: {
+    value: Dayjs;
+    type: 'month' | 'year';
+    onChange: (date: Dayjs) => void;
+    onTypeChange: (type: 'month' | 'year') => void;
+}) {
+    return (
+        <Space wrap style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                Year
+                <Select
+                    id="holiday-calendar-year"
+                    value={value.year()}
+                    options={YEARS}
+                    onChange={(year) => onChange(value.year(year))}
+                    style={{ width: 96 }}
+                />
+            </label>
+            {type === 'month' && (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    Month
+                    <Select
+                        id="holiday-calendar-month"
+                        value={value.month()}
+                        options={MONTHS}
+                        onChange={(month) => onChange(value.month(month))}
+                        style={{ width: 140 }}
+                    />
+                </label>
+            )}
+            <Radio.Group
+                aria-label="Calendar view"
+                value={type}
+                onChange={(event) => onTypeChange(event.target.value)}
+            >
+                <Radio.Button value="month">Month</Radio.Button>
+                <Radio.Button value="year">Year</Radio.Button>
+            </Radio.Group>
+        </Space>
+    );
 }

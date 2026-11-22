@@ -24,7 +24,11 @@ jobs:
   smoke:
     needs: ci
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Compose build plus Chromium install and the e2e suite no longer fit in 20 minutes.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
       - name: Prepare .env
@@ -57,9 +61,36 @@ jobs:
           expect 200 /bff/healthz
           expect 200 /api/v1/branding
           expect 401 /api/v1/me
-      # TODO(phase 17): Playwright e2e (pinned mcr.microsoft.com/playwright image, --network host).
       - name: Keycloak login through nginx (alice)
         run: scripts/smoke-login.sh alice
+      # Playwright on the runner, against compose nginx at localhost:8080.
+      # QA owns web/e2e/playwright.config.ts and must read PLAYWRIGHT_BASE_URL for use.baseURL.
+      # @playwright/test must be a direct web/ devDependency so npm ci provides the CLI.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Playwright e2e
+        working-directory: web
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:8080
+        run: npx playwright test --config=e2e/playwright.config.ts
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: ignore
       - name: Dump logs
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color

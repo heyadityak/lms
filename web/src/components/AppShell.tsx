@@ -19,7 +19,7 @@ import { usePendingApprovalCount } from '@/lib/queries';
 import { FIGMA, activeNavColor } from '@/theme/brand';
 import { navItems, selectedKey, type NavItem } from './nav';
 import { AppProviders, type ShellUser } from './providers';
-import { InitialsAvatar, isApprover } from './ui';
+import { InitialsAvatar, initials, isApprover } from './ui';
 
 const ICONS: Record<string, ReactNode> = {
     '/': <AppstoreOutlined />,
@@ -167,7 +167,6 @@ function AdminSubnav({
             style={
                 {
                     '--lms-subnav-accent': token.colorPrimary,
-                    '--lms-subnav-accent-bg': token.colorPrimaryBg,
                     '--lms-subnav-text': FIGMA.heading,
                     margin: mobile ? '-16px -16px 16px' : '-30px -33px 24px',
                     paddingInline: mobile ? 16 : 33,
@@ -308,13 +307,15 @@ function Shell({
                         >
                             <Button
                                 type="text"
-                                aria-label={`User menu for ${user.name}`}
+                                aria-label={`${initials(user.name)} ${user.name}, User menu for ${user.name}`}
                                 style={{ height: 48 }}
                             >
                                 <Space>
                                     <InitialsAvatar name={user.name} />
                                     {!mobile && (
-                                        <span style={{ color: FIGMA.heading }}>{user.name}</span>
+                                        <span
+                                            style={{ color: FIGMA.heading }}
+                                        >{` ${user.name}`}</span>
                                     )}
                                     <DownOutlined style={{ color: FIGMA.heading }} />
                                 </Space>

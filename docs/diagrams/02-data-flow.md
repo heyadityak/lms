@@ -19,12 +19,12 @@ Business rules come from [USE_CASES.md](../USE_CASES.md); tables from [SYSTEM_DE
 | D2 Departments | Postgres | `departments` | P10 |
 | D3 Leave types | Postgres | `leave_types` | P10 |
 | D4 Holidays | Postgres | `holidays` | P10 |
-| D5 Leave requests | Postgres | `leave_requests` | P2, P3, P4 |
+| D5 Leave requests | Postgres | `leave_requests` (`hours`, `escalated_at`) | P2, P3, P4, and the 09:00 escalation command (sets `escalated_at` only) |
 | D6 Request actions (audit) | Postgres | `leave_request_actions` | P2, P3, P4 |
-| D7 Leave ledger | Postgres | `leave_ledger_entries` (append-only) | P5 only |
+| D7 Leave ledger | Postgres | `leave_ledger_entries` (append-only, includes `encashment` and monthly `grant` rows with `month`) | accrual, approve/cancel, adjustment, encashment. Never update or delete |
 | D8 Settings | Postgres | `settings` (`brand.*`, `modules.disabled`, `work.weekend_days`) | P9 |
 | D9 Failed jobs | Postgres | `failed_jobs` | P7 |
-| D10 Branding assets | RustFS (S3-compatible), `BRANDING_DISK=s3` | `logo-{sha1}.{ext}`, `favicon-{sha1}.{ext}` | P9 |
+| D10 Object storage | RustFS (S3-compatible), `BRANDING_DISK=s3` | `logo-{sha1}.{ext}`, `favicon-{sha1}.{ext}`, `leave-attachments/…`, `avatars/…` | P9 (branding), attachment and avatar actions |
 | D11 Web sessions | Postgres DB `lms_auth` (Better Auth, D-45), read/written only by `web`; browser holds only the signed session cookie + JWE cache | `session`, `account` (access, refresh, id token, expiries; encrypted), `verification` (OAuth state), `user` (Keycloak mirror) | P1 |
 | D12 Cache, locks, rate limits | Redis DB 1 | `settings:all`, `keycloak:jwks`, `keycloak:admin-token`, `idem:{user}:{key}`, schedule / guard locks, `throttle:*` | P1, P2, P6, P9, P11 |
 | D13 Queue | Redis DB 3 | `queues:default` (notification jobs) | P2, P3, P4, P12 → read by P7 |
@@ -166,7 +166,7 @@ flowchart LR
     D5[[D5 leave_requests]]
     D7[[D7 leave_ledger_entries]]
     D8[[D8 settings]]
-    D10[[D10 RustFS branding assets]]
+    D10[[D10 RustFS objects<br/>branding, attachments, avatars]]
     D12[[D12 Redis cache + locks]]
     D13[[D13 Redis queue]]
     D14[[D14 user_admin_audits]]
@@ -225,7 +225,7 @@ flowchart LR
 ```
 
 Notes:
-- **P5 is the only writer of D7**, and it only appends. Balance is always derived (`SUM(days)`), never stored (D-02).
+- **D7 is append-only.** Accrual, approval, cancellation, adjustment, and encashment insert rows. Nothing updates or deletes them. Balance is always `SUM(days)` (D-02). A department quota override, when present, is the amount accrued instead of the leave type's `annual_quota` (D-55). Monthly types skip the year-start grant and get `round(quota/12, 3)` on the 1st (D-53).
 - P1 never sees a password. It receives tokens from Keycloak, verifies them against the cached JWKS (D12), and mirrors identity into D1 (`keycloak_sub`, name, email, role, is_admin).
 - P11 writes **Keycloak first**, then D1. If the D1 write fails after a create, P11 deletes the Keycloak user again (compensation) and records it in D14.
 - P9 never writes env. A module can be disabled only if it is licensed (D-14). `work.weekend_days` changes apply to new submissions only; stored `days` in D5 are never recalculated (D-30).

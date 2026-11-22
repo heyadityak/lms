@@ -26,8 +26,8 @@ final class LeaveRequestValidator
     ) {}
 
     /**
-     * @param  array{leave_type_id: string, start_date: string, end_date: string, day_part?: string|null}  $data
-     * @return array{type: LeaveType, start: CarbonImmutable, end: CarbonImmutable, part: DayPart, days: float, year: int, available: ?float}
+     * @param  array{leave_type_id: string, start_date: string, end_date: string, day_part?: string|null, hours?: int|null}  $data
+     * @return array{type: LeaveType, start: CarbonImmutable, end: CarbonImmutable, part: DayPart, hours: ?int, days: float, year: int, available: ?float}
      */
     public function validate(User $user, array $data): array
     {
@@ -53,7 +53,22 @@ final class LeaveRequestValidator
         if ($part->isHalf() && (! $start->equalTo($end) || ! $type->allow_half_day)) {
             throw new LeaveRuleViolation('HALF_DAY_NOT_ALLOWED', $type->allow_half_day ? 'A half day must start and end on the same date.' : "{$type->code} cannot be taken as a half day.", 'day_part');
         }
-        $days = $this->calculator->forRange($start, $end, $part);
+        $hours = isset($data['hours']) && $data['hours'] !== null ? (int) $data['hours'] : null;
+        $sandwich = (bool) $type->sandwich;
+        if ($hours !== null) {
+            if ($part->isHalf()) {
+                throw new LeaveRuleViolation('HALF_DAY_NOT_ALLOWED', 'Hours cannot be combined with a half day.', 'hours');
+            }
+            if (! $start->equalTo($end)) {
+                throw new LeaveRuleViolation('INVALID_DATE_RANGE', 'Hourly leave must start and end on the same date.', 'hours');
+            }
+            if ($this->calculator->forRange($start, $end, DayPart::Full, $user->location_id, $sandwich) <= 0) {
+                throw new LeaveRuleViolation('NO_WORKING_DAYS', 'Selected dates contain no working days.', 'start_date');
+            }
+            $days = $hours / 8;
+        } else {
+            $days = $this->calculator->forRange($start, $end, $part, $user->location_id, $sandwich);
+        }
         if ($days <= 0) {
             throw new LeaveRuleViolation('NO_WORKING_DAYS', 'Selected dates contain no working days.', 'start_date');
         }
@@ -62,11 +77,11 @@ final class LeaveRequestValidator
         if ($available !== null && $days > $available) {
             throw new LeaveRuleViolation('INSUFFICIENT_BALANCE', "Requested {$days} days of {$type->code} but only {$available} are available.", 'end_date');
         }
-        if ($this->approvers->approversFor($user)->isEmpty()) {
+        if ($this->approvers->approversFor($user, $days)->isEmpty()) {
             throw new LeaveRuleViolation('NO_APPROVER', 'No approver configured. Ask HR to assign a manager.', 'leave_type_id');
         }
 
-        return compact('type', 'start', 'end', 'part', 'days', 'year', 'available');
+        return compact('type', 'start', 'end', 'part', 'hours', 'days', 'year', 'available');
     }
 
     /** V6: no other pending/approved request of the same user intersecting [start, end] (inclusive, half-days too). */

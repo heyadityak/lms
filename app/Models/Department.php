@@ -22,4 +22,10 @@ class Department extends Model
     {
         return $this->hasMany(User::class);
     }
+
+    /** @return HasMany<DepartmentLeaveQuota, $this> */
+    public function leaveQuotas(): HasMany
+    {
+        return $this->hasMany(DepartmentLeaveQuota::class);
+    }
 }

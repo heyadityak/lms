@@ -1,6 +1,6 @@
 # LMS — System Design
 
-Status: v1.5 (architect, 2026-11-19; Next.js frontend + BFF, Laravel API-only D-43; Keycloak D-20, API contract D-21, in-app user admin D-22, Redis D-23, scaling/RustFS D-24, CI D-25, leave year D-26, FrankenPHP D-27, `admin` role D-29, editable weekend D-30, review answers D-31…D-34). Business rules live in [USE_CASES.md](USE_CASES.md). Where this file and USE_CASES disagree, USE_CASES wins for business rules and this file wins for technical design.
+Status: v1.6 (architect, 2026-11-22; phase 19, D-53, D-54, D-55, D-56, D-58). Business rules live in [USE_CASES.md](USE_CASES.md). Where this file and USE_CASES disagree, USE_CASES wins for business rules and this file wins for technical design.
 
 ## 1. Context & constraints
 
@@ -11,7 +11,7 @@ Status: v1.5 (architect, 2026-11-19; Next.js frontend + BFF, Laravel API-only D-
 | UI | **Next.js 16** frontend (`web/`, App Router, TypeScript strict, standalone output, Node 24 LTS alpine, non-root, `:3000`), **Ant Design v6** (`antd` + `@ant-design/nextjs-registry` + `@ant-design/icons` v6, D-45), TanStack Query, typed client generated from the OpenAPI spec. Runtime theming via antd `ConfigProvider` tokens (CSS variables, always on in v6). Screens: [UI_GUIDELINES.md](UI_GUIDELINES.md). Laravel is **API-only** (D-43, supersedes D-05). See §6.1. |
 | API | JSON, `/api/v1`, contract-first: [`docs/api/openapi.yaml`](api/openapi.yaml) + [`docs/API_GUIDELINES.md`](API_GUIDELINES.md) (D-21). Bearer JWT from Keycloak (D-20). |
 | Identity | **Keycloak 26** (own container, `keycloak` DB on the same Postgres server, clustered in prod). Realm `lms`, realm roles `employee|manager|hr_admin` (base, one per user) + `admin` (additive, D-29), clients `lms-web` (confidential), `lms-api-cli` (public, PKCE), `lms-admin` (service account, D-22). See §10.1 (D-20). |
-| Web auth | **BFF** in Next.js: Better Auth (generic OAuth plugin → Keycloak, confidential client `lms-web`, auth code + PKCE), tokens stored server-side in Postgres DB `lms_auth`, browser gets only an HttpOnly session cookie; `/bff/api/*` proxies to Laravel `/api/v1/*` with `Authorization: Bearer`. Laravel has no sessions and no login routes. No passwords in the app (D-43, D-45). |
+| Web auth | **BFF** in Next.js: sign-in form on the LMS welcome page, `POST /bff/login`, resource-owner password grant for confidential client `lms-web` only (D-52; amends the auth-code browser redirect in D-20 and D-43). The BFF does not store the password. Tokens stay server-side in Postgres DB `lms_auth` (D-45); the browser gets only an HttpOnly session cookie and is not sent to Keycloak's login UI. `/bff/api/*` proxies to Laravel `/api/v1/*` with `Authorization: Bearer`. Logout stays RP-initiated. Laravel has no sessions, no login routes and no passwords. |
 | Queue / cache / locks / rate limits | **Redis 7** (`phpredis`), D-23. Separate logical DBs: `default` 0, `cache` 1 (cache, atomic locks, rate limiters, JWKS, admin token, idempotency keys), queue 3; DB 2 (`session`) unused since D-43 (`SESSION_DRIVER=array`). Key prefix `REDIS_PREFIX=lms-`. `failed_jobs` stays in Postgres. |
 | Mail | SMTP via env. `log` mailer in tests, Mailpit in compose. |
 | Files | Laravel disk `BRANDING_DISK=s3` (and `FILESYSTEM_DISK=s3`): **RustFS** (S3-compatible) in dev/compose, any S3-compatible store in prod. The `branding` local disk exists only for single-node installs (D-24). |
@@ -111,25 +111,39 @@ Volumes (dev): `pgdata`, `redisdata`, `s3data`. No app container has local state
 
 ## 4. Data model
 
-All tables use `bigIncrements id` and `timestamps()` (`timestamptz`) unless noted. Day quantities are `numeric(5,1)`, always multiples of 0.5. PHP casts them with `'float'`. Multiples of 0.5 are exact in binary floating point, so float math is safe.
+All tables use `bigIncrements id` and `timestamps()` (`timestamptz`) unless noted. Leave-request `days` are `numeric(8,3)` and a multiple of 0.125 (a whole day, a half day, or `hours/8`). Ledger `days` are `numeric(8,3)` and are not limited to 0.5: monthly grants are `round(quota/12, 3)` and an encashment stores a negated amount with up to 3 decimal places (D-53, D-58). Quotas stay multiples of 0.5 (`numeric(5,1)` on leave types and department overrides). PHP casts day amounts with `'float'`. 0.125 and 0.5 are exact in IEEE-754; monthly amounts are rounded to 3 decimal places before they are stored.
 
 ```mermaid
 erDiagram
     departments ||--o{ users : has
+    locations ||--o{ users : "location_id"
+    locations ||--o{ holidays : "location_id"
     users ||--o{ users : "manager_id"
     users ||--o{ leave_requests : submits
     leave_types ||--o{ leave_requests : of
+    leave_requests ||--o| leave_request_attachments : file
     leave_requests ||--o{ leave_request_actions : history
     users ||--o{ leave_request_actions : actor
     users ||--o{ leave_ledger_entries : owns
     leave_types ||--o{ leave_ledger_entries : of
     leave_requests |o--o{ leave_ledger_entries : "debit/reversal"
+    departments ||--o{ department_leave_quotas : has
+    leave_types ||--o{ department_leave_quotas : overrides
+    users ||--o| approval_delegations : delegator
+    users ||--o{ approval_delegations : delegate
     users |o--o{ settings : updated_by
     users ||--o{ user_admin_audits : actor
     users |o--o{ user_admin_audits : target
     users ||--o{ approval_reminders : reminded_on
+    users ||--o{ audit_logs : actor
 
     departments {
+        bigint id PK
+        char(26) public_id UK "ULID"
+        varchar(20) code UK
+        varchar(100) name
+    }
+    locations {
         bigint id PK
         char(26) public_id UK "ULID"
         varchar(20) code UK
@@ -144,7 +158,9 @@ erDiagram
         varchar(20) role "employee|manager|hr_admin; cache of the base realm role"
         boolean is_admin "default false; cache of realm role admin (D-29)"
         bigint department_id FK "nullable, restrictOnDelete"
+        bigint location_id FK "nullable -> locations, restrictOnDelete"
         bigint manager_id FK "nullable -> users, nullOnDelete"
+        varchar(255) avatar_path "nullable, object key on the S3 disk"
         varchar(50) employee_code UK "nullable"
         varchar(100) designation "nullable"
         varchar(50) employment_type "nullable"
@@ -163,13 +179,16 @@ erDiagram
         numeric max_balance "5,1 nullable: null=no cap"
         boolean allow_half_day "default true"
         smallint max_backdate_days "default 0"
+        boolean sandwich "default false"
+        varchar(10) accrual_frequency "yearly|monthly, default yearly"
         boolean is_active "default true"
     }
     holidays {
         bigint id PK
         char(26) public_id UK "ULID"
-        date date UK
+        date date
         varchar(100) name
+        bigint location_id FK "nullable, null = all locations, restrictOnDelete"
     }
     leave_requests {
         bigint id PK
@@ -179,8 +198,10 @@ erDiagram
         date start_date
         date end_date
         varchar(20) day_part "full|first_half|second_half"
-        numeric days "5,1 server-computed"
+        smallint hours "nullable, 1-8, single day only"
+        numeric days "8,3 server-computed"
         varchar(20) status "pending|approved|rejected|cancelled"
+        timestamptz escalated_at "nullable, UC-M7, not in the API"
         text reason
         text handover_note "nullable"
         bigint decided_by FK "nullable -> users"
@@ -205,8 +226,9 @@ erDiagram
         bigint user_id FK
         bigint leave_type_id FK
         smallint year
-        varchar(20) kind "grant|carry_forward|lapse|debit|reversal|adjustment"
-        numeric days "5,1 signed"
+        varchar(20) kind "grant|carry_forward|lapse|debit|reversal|adjustment|encashment"
+        smallint month "nullable, calendar month of a monthly grant"
+        numeric days "8,3 signed"
         bigint leave_request_id FK "nullable"
         bigint actor_id FK "nullable (null=system)"
         varchar(255) note "nullable"
@@ -237,31 +259,70 @@ erDiagram
         date reminded_on "APP_TIMEZONE calendar date"
         timestamptz created_at "no updated_at, no public_id"
     }
+    leave_request_attachments {
+        bigint id PK
+        char(26) public_id UK "ULID"
+        bigint leave_request_id UK "one file cascadeOnDelete"
+        varchar(255) file_name
+        varchar(100) content_type
+        integer byte_size
+        varchar(255) disk_path
+        timestamptz created_at "no updated_at"
+    }
+    department_leave_quotas {
+        bigint id PK
+        bigint department_id FK "cascadeOnDelete"
+        bigint leave_type_id FK "restrictOnDelete"
+        numeric annual_quota "5,1 >= 0"
+    }
+    approval_delegations {
+        bigint id PK
+        char(26) public_id UK "ULID"
+        bigint user_id UK "delegator restrictOnDelete"
+        bigint delegate_id FK "restrictOnDelete"
+        date start_date
+        date end_date
+    }
+    audit_logs {
+        bigint id PK
+        char(26) public_id UK "ULID"
+        bigint actor_id FK "restrictOnDelete"
+        varchar(20) action "created|updated|deleted"
+        varchar(20) subject_type
+        char(26) subject_id "nullable public_id"
+        jsonb changes
+        timestamptz created_at "no updated_at"
+    }
 ```
 
 ### Constraints & indexes (put these in migrations)
 
 | Table | Constraint / index |
 |---|---|
-| `users` | `CHECK (role IN (...))`, `CHECK (manager_id <> id)`, unique `(keycloak_sub)` (NULLs allowed), index `(department_id)`, `(manager_id)` |
-| all API-exposed tables (`users`, `departments`, `leave_types`, `holidays`, `leave_requests`, `leave_request_actions`, `leave_ledger_entries`) | `public_id char(26) NOT NULL UNIQUE` (ULID, Laravel `HasUlids` with `uniqueIds() = ['public_id']`, `getRouteKeyName() = 'public_id'`). bigint `id` stays the PK/FK and is never exposed (D-21). |
-| `leave_requests` | `CHECK (end_date >= start_date)`, `CHECK (days > 0)`, `CHECK (day_part = 'full' OR start_date = end_date)`, `CHECK (status IN (...))`, index `(user_id, status)`, `(status, start_date)` |
+| `users` | `CHECK (role IN (...))`, `CHECK (manager_id <> id)`, unique `(keycloak_sub)` (NULLs allowed), index `(department_id)`, `(location_id)`, `(manager_id)` |
+| all API-exposed tables (`users`, `departments`, `locations`, `leave_types`, `holidays`, `leave_requests`, `leave_request_actions`, `leave_request_attachments`, `leave_ledger_entries`, `approval_delegations`, `audit_logs`) | `public_id char(26) NOT NULL UNIQUE` (ULID, Laravel `HasUlids` with `uniqueIds() = ['public_id']`, `getRouteKeyName() = 'public_id'`). bigint `id` stays the PK/FK and is never exposed (D-21). `department_leave_quotas` is not addressed by its own id (the department resource lists it) and has no `public_id`. |
+| `leave_types` | `CHECK (accrual_frequency IN ('yearly','monthly'))`, `sandwich` boolean NOT NULL default false |
+| `leave_requests` | `CHECK (end_date >= start_date)`, `CHECK (days > 0)`, `CHECK ((days * 8) = trunc(days * 8))`, `CHECK (day_part = 'full' OR (start_date = end_date AND hours IS NULL))`, `CHECK (hours IS NULL OR (hours BETWEEN 1 AND 8 AND start_date = end_date AND day_part = 'full' AND days = hours::numeric / 8))`, `CHECK (status IN (...))`, index `(user_id, status)`, `(status, start_date)`, partial index `(status, created_at) WHERE status = 'pending' AND escalated_at IS NULL` |
 | `leave_requests` | **Overlap backstop:** `CREATE EXTENSION IF NOT EXISTS btree_gist;` then `ALTER TABLE leave_requests ADD CONSTRAINT leave_requests_no_overlap EXCLUDE USING gist (user_id WITH =, daterange(start_date, end_date, '[]') WITH &&) WHERE (status IN ('pending','approved'));` Catch SQLSTATE `23P01` → 422 overlap error. |
-| `leave_ledger_entries` | index `(user_id, leave_type_id, year)`. Partial unique `(user_id, leave_type_id, year, kind) WHERE kind IN ('grant','carry_forward','lapse')`. Partial unique `(leave_request_id, kind) WHERE leave_request_id IS NOT NULL`, so each request gets at most one debit and one reversal. |
+| `leave_ledger_entries` | index `(user_id, leave_type_id, year)`. Partial unique `(user_id, leave_type_id, year, kind) WHERE kind IN ('grant','carry_forward','lapse') AND month IS NULL`. Partial unique `(user_id, leave_type_id, year, month) WHERE kind = 'grant' AND month IS NOT NULL`. Partial unique `(leave_request_id, kind) WHERE leave_request_id IS NOT NULL`, so each request gets at most one debit and one reversal. `CHECK (days <> 0)`. `CHECK (month IS NULL OR month BETWEEN 1 AND 12)`. |
 | `leave_request_actions` | index `(leave_request_id, created_at)` |
-| `holidays` | unique `(date)` |
+| `leave_request_attachments` | unique `(leave_request_id)`. FK cascade. |
+| `holidays` | `UNIQUE NULLS NOT DISTINCT (date, location_id)` |
+| `department_leave_quotas` | unique `(department_id, leave_type_id)`. `CHECK (annual_quota >= 0)`. timestamps. No `public_id`. |
+| `approval_delegations` | unique `(user_id)` (one row). `CHECK (end_date >= start_date)`. `CHECK (delegate_id <> user_id)`. timestamps. |
+| `audit_logs` | index `(created_at DESC)`. Append-only (`update`/`delete` throw). No `updated_at`. |
 | `approval_reminders` | unique `(user_id, reminded_on)`. FK `user_id` → `users.id` RESTRICT (D-12). Not API-exposed: no `public_id`. UC-S4 idempotency row, one per recipient per calendar date. |
 
 Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cache_locks`, `jobs`, `job_batches` (unused with Redis, kept as a fallback driver, D-23), `failed_jobs` (used). **Not created** (D-20): `password_reset_tokens` (drop it from the stock users migration), `personal_access_tokens` (do not run `install:api` with Sanctum; create `routes/api.php` by hand). Keycloak keeps its own tables in the separate `keycloak` database.
 
 ### Enums (`app/Enums`, string-backed)
-`Role` (`employee`, `manager`, `hr_admin`, `admin`; `users.role` holds only a base role, `admin` is mirrored to `users.is_admin`, D-29), `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module` (`holidays`, `reports`, `api`, `notifications`, `user_management`, `multi_level_approval`, `delegation`). Models cast columns to these enums.
+`Role` (`employee`, `manager`, `hr_admin`, `admin`; `users.role` holds only a base role, `admin` is mirrored to `users.is_admin`, D-29), `LeaveStatus`, `DayPart`, `LedgerKind` (includes `encashment`), `LeaveAction`, `AccrualFrequency` (`yearly`, `monthly`), `Module` (`holidays`, `reports`, `api`, `notifications`, `user_management`, `multi_level`). The reserved keys `multi_level_approval` and `delegation` are not in the enum (D-54). Models cast columns to these enums.
 
 ## 5. Domain components
 
 | Class | Responsibility |
 |---|---|
-| `App\Services\WorkingDayCalculator` | `count(CarbonImmutable $start, CarbonImmutable $end, DayPart $part, array $weekendIsoDays, array $holidayDates): float`. A **pure function** with no DB access, so it is unit-testable. A thin wrapper `forRange()` loads holidays (only if the `holidays` module is on) and the weekend days from `Settings::get('work.weekend_days')` (override ?? `LMS_WEEKEND_DAYS`, D-30). |
+| `App\Services\WorkingDayCalculator` | `count(CarbonImmutable $start, CarbonImmutable $end, DayPart $part, array $weekendIsoDays, array $holidayDates, bool $sandwich, ?int $hours): float`. A **pure function** with no DB access. `forRange()` loads the caller's holiday set (only if `holidays` is on: `location_id` null, plus the user's location) and the weekend days from `Settings::get('work.weekend_days')` (override ?? `LMS_WEEKEND_DAYS`, D-30). Sandwich and hours: USE_CASES §3.3 and §3.15. |
 | `App\Services\LeaveBalanceService` | `balance()`, `pending()`, `available()`, `summary(User, int $year)` (entitled/used/pending/available per type). |
 | `App\Actions\Leave\SubmitLeaveRequest` | Validation V1–V8 (USE_CASES §3.4) inside `DB::transaction`, with `User::lockForUpdate()` on the requester row to serialise that user's submissions. |
 | `App\Actions\Leave\ApproveLeaveRequest` / `RejectLeaveRequest` / `CancelLeaveRequest` | Lock the request row (`lockForUpdate`). Assert the current status, else throw `InvalidTransition` (409). Write the ledger entry + action row. Dispatch the notification `afterCommit`. |
@@ -286,6 +347,19 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 | `App\Actions\Leave\SendPendingApprovalReminders` | UC-S4. `handle(): PendingApprovalReminderSummary`. Rules: USE_CASES §3.12. |
 | `App\Console\Commands\AccrueYear` | `lms:accrue-year {year?}` → `RunYearStartAccrual`. Schedule: §5.1 (D-24, D-26). |
 | `App\Console\Commands\RemindPendingApprovals` | `lms:remind-pending-approvals` (no arguments) → `SendPendingApprovalReminders`. Prints the summary and returns `SUCCESS`. Schedule: §5.1. |
+| `App\Services\ApproverResolver` | `approversFor(User $requester, float $days): Collection` and `canDecide(User $actor, LeaveRequest $request): bool`. Steps: USE_CASES §3.6. Reads `Modules` for `multi_level` and `config('lms.hr_approval_days')`. Delegation is a query for a covering row, one hop. |
+| `App\Actions\Leave\StoreLeaveAttachment`, `DeleteLeaveAttachment` | UC-E10. One file on the S3 disk. Owner, pending only. |
+| `App\Actions\Users\StoreAvatar`, `DeleteAvatar` | UC-E11. Replaces `users.avatar_path` on the same disk. |
+| `App\Actions\Leave\RenderLeaveRequestPdf` | UC-E12. Dompdf. Not stored. |
+| `App\Actions\Leave\StoreApprovalDelegation`, `DeleteApprovalDelegation` | UC-M5. One row per caller. |
+| `App\Actions\Leave\SendStaleApprovalEscalations` | UC-M7. Sets `escalated_at`. No status change. |
+| `App\Actions\Accrual\RunMonthlyAccrual` | UC-H13. `lms:accrue-month`. |
+| `App\Actions\Settings\UpsertDepartmentLeaveQuota` | UC-H10. Null `annual_quota` deletes the row. |
+| `App\Actions\Accrual\EncashLeave` | UC-H11. Appends `encashment`. |
+| `App\Models\AuditLog` | UC-H15. Append-only. HR actions call it inside the same transaction. |
+| `App\Console\Commands\AccrueMonth` | `lms:accrue-month` → `RunMonthlyAccrual`. |
+| `App\Console\Commands\EscalateStaleApprovals` | `lms:escalate-stale-approvals` → `SendStaleApprovalEscalations`. |
+| `App\Notifications\LeaveRequestEscalated` | UC-M7. `ShouldQueue`. UC-S2 mail views. Link `/leave-requests/{id}`. |
 
 ### 5.1 Scheduled tasks
 
@@ -295,8 +369,10 @@ Registered in `routes/console.php`. Timezone is the scheduler default `config('a
 |---|---|---|
 | `lms:accrue-year` | `yearlyOn((int) config('lms.leave_year_start_month', 1), 1, '00:10')` | `->onOneServer()->withoutOverlapping()` |
 | `lms:remind-pending-approvals` | `dailyAt('08:00')` | `->onOneServer()->withoutOverlapping()` |
+| `lms:escalate-stale-approvals` | `dailyAt('09:00')` | `->onOneServer()->withoutOverlapping()` |
+| `lms:accrue-month` | `monthlyOn(1, '00:15')` | `->onOneServer()->withoutOverlapping()` |
 
-08:00 is UC-S4. The Redis locks stop overlapping scheduler replicas (D-24). They do not stop a second mail the same day: that is unique `(user_id, reminded_on)` on `approval_reminders` (USE_CASES §3.12). Accrual idempotency stays the partial unique ledger index (D-26).
+08:00 is UC-S4. 09:00 is UC-M7. 00:15 on the 1st is the monthly grant and sits after the 00:10 year-start run. The Redis locks stop overlapping scheduler replicas (D-24). They do not replace the per-row idempotency: `approval_reminders`, `leave_requests.escalated_at`, and the partial unique indexes on `leave_ledger_entries` (USE_CASES §3.7, §3.12, §3.18). Yearly accrual idempotency stays the `month IS NULL` grant index (D-26, D-53).
 
 The reminder reuses the UC-S2 mail views (`mail.leave-request`, `mail.leave-request-text`). Subject prefix `[{brand name}]`, from-name the brand name, link `config('app.url')` + `/approvals`. One queued job per recipient who gets a new row that day. No HTTP route and no OpenAPI change.
 
@@ -317,17 +393,17 @@ The reminder reuses the UC-S2 mail views (`mail.leave-request`, `mail.leave-requ
 
 | Path | Who (UI gate; Laravel Policies decide) | Module | API used (via `/bff/api`) |
 |---|---|---|---|
-| `/signin` (landing page), `POST /auth/sign-in/social`, `/auth/callback/keycloak`, `/auth/*` | public (Better Auth) | core | Keycloak |
+| Welcome page (sign-in form), `POST /bff/login` | public | core | Keycloak resource-owner password grant, server-side (D-52) |
 | `POST /bff/logout` | session | core | Better Auth `signOut` → 303 to Keycloak end-session |
 | `/bff/api/[...path]` | session | — | proxy to `/api/v1/{path}` |
 | `GET /bff/healthz` | public, container healthcheck | — | none |
-| `/` dashboard | any | core | `/me`, `/me/balances`, `/approvals` (count), Team Time Off (manager, hr_admin): `/leave-requests?filter[status]=approved,pending&filter[from]&filter[to]&include=user`, Next Holidays: `/holidays` (module) |
-| `/leave-requests`, `/leave-requests/new`, `/leave-requests/[id]` | any | core | `/me/leave-requests`, `/leave-types`, `POST /leave-requests/preview` (debounced day count + balance), `POST /leave-requests` (`Idempotency-Key` per form submit), `/leave-requests/{id}`, `/cancel` |
-| `/approvals` | manager, hr_admin | core | `/approvals`, `/approve`, `/reject` |
-| `/team` | manager, hr_admin | core | `/users`, `/users/{id}/balances`, `/leave-requests` |
+| `/` dashboard | any | core | `/me`, `/me/balances`, `/approvals` (count), Team Time Off for any role: `GET /team-calendar?from&to` (approved, same department, UC-E13), Next Holidays: `/holidays` (module) |
+| `/leave-requests`, `/leave-requests/new`, `/leave-requests/[id]` | any | core | `/me/leave-requests`, `/leave-types`, `POST /leave-requests/preview` (debounced day count + balance, optional `hours`), `POST /leave-requests` (`Idempotency-Key` per form submit), `/leave-requests/{id}`, `/cancel`, `/leave-requests/{id}/attachments`, `/leave-requests/{id}/pdf` |
+| `/approvals` | manager, hr_admin | core | `/approvals`, `/approve`, `/reject`, `/me/approval-delegations` |
+| `/team` | any | core | `/team-calendar`, `/users`, `/users/{id}/balances`, `/leave-requests` (manager and hr_admin keep the richer list) |
 | `/holidays` | any | `holidays` | `/holidays` |
-| `/admin/users`, `/admin/users/[id]` (HR fields, adjustments, deactivate) | hr_admin | core | `/users*`, `/users/{id}/ledger-entries` |
-| `/admin/departments`, `/admin/leave-types`, `/admin/holidays` | hr_admin | core / `holidays` | CRUD endpoints |
+| `/admin/users`, `/admin/users/[id]` (HR fields, adjustments, encashment, deactivate) | hr_admin | core | `/users*`, `/users/{id}/ledger-entries`, `/users/{id}/encashments` |
+| `/admin/departments`, `/admin/leave-types`, `/admin/holidays`, `/admin/locations`, `/admin/audit-logs` | hr_admin | core / `holidays` | CRUD endpoints, `PUT /departments/{id}/leave-quotas`, `GET /audit-logs` |
 | `/admin/reports` | hr_admin | `reports` | `/reports/*` (CSV streamed through the BFF) |
 | `/admin/settings/working-week` | hr_admin | core | `/settings/working-week` |
 | `/admin/settings/branding`, `/admin/settings/modules` | admin | core | `/settings/branding*`, `/modules*` |
@@ -336,6 +412,8 @@ The reminder reuses the UC-S2 mail views (`mail.leave-request`, `mail.leave-requ
 The paths for leave requests and approvals keep the old web paths, so notification mail links (`APP_URL` + path) work.
 
 **Auth (BFF, D-45).** Better Auth `1.7.26` (exact pin), handler at `/auth/[...all]` (`basePath: '/auth'`, `baseURL: APP_URL`), `genericOAuth` provider `keycloak`: confidential client `lms-web`, auth code + PKCE S256 + `state` + OIDC `nonce`, ID token verified (`requireIdTokenVerification`). Endpoints come from discovery on the **internal** URL `${KEYCLOAK_BASE_URL}/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration`: Keycloak hostname v2 (`KC_HOSTNAME` = public URL, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`) returns `issuer`, authorization and end-session on the public URL and token, userinfo and JWKS on the internal one, so no endpoint is hard-coded. No email/password, no other providers; the Better Auth `user` table only mirrors Keycloak users. Store: Postgres DB `lms_auth` (`AUTH_DATABASE_URL`, separate from `lms`): `session`, `account` (access/refresh/ID token, encrypted at rest), `verification` (OAuth state, so the callback may hit any replica), `rateLimit`. Cookies: `__Secure-lms.session_token` (signed) + `__Secure-lms.session_data` (JWE cookie cache, 5 min), HttpOnly, Secure in prod, SameSite=Lax; no tokens in cookies. Token use: one server helper gets the access token for the session's Keycloak account (`getAccessToken`, refreshing when < 60 s are left via `refreshToken`; Keycloak `lms-web` revokes refresh tokens, max reuse 1; on refresh failure re-read once, then delete the session ⇒ sign in again, silent while the Keycloak SSO session lives). Logout: `POST /bff/logout` (Origin-checked) → `auth.api.signOut` deletes the session and returns the Keycloak end-session URL with `id_token_hint`, `post_logout_redirect_uri=APP_URL/`, `client_id` → 303. Schema migrations: one-off `node scripts/auth-migrate.mjs` (§12). The browser never sees tokens.
+
+**Welcome-page sign-in (D-52, amends the interactive auth-code redirect in D-20 and D-43).** The sign-in form lives on the LMS welcome page. `POST /bff/login` accepts username and password and exchanges them at Keycloak with the resource-owner password grant for confidential client `lms-web` only. The BFF does not store the password. Direct Access Grants are enabled only on `lms-web`. Tokens stay server-side in `lms_auth`, same as D-45. The browser is not redirected to Keycloak's login UI. Logout stays RP-initiated. Laravel stores no passwords.
 
 **BFF proxy** `/bff/api/[...path]` → `${LMS_API_URL}/api/v1/{path}`: adds `Authorization: Bearer`, `X-Forwarded-For/-Proto/-Host`; forwards `Accept`, `Content-Type`, `Idempotency-Key`, streamed body; never `Cookie`. Returns status, body and `Content-Type`, `Content-Disposition`, `Location`, `Retry-After`, `X-RateLimit-*`, `Idempotent-Replayed`, `X-Request-Id`, `WWW-Authenticate` unchanged. No session ⇒ own `401` problem+json `UNAUTHENTICATED`; Laravel 401 ⇒ also clears the cookie. CSRF: mutating methods need `Origin` = `APP_URL` origin (else 403 `FORBIDDEN`). Details: API_GUIDELINES §5.1.
 
@@ -356,15 +434,18 @@ Middleware on every `/api/v1` route except `GET /branding`: `module:api` (404 wh
 | Area | Endpoints (all under `/api/v1`) | Roles (`x-roles`) |
 |---|---|---|
 | Public branding (no auth, no `module:api`, limiter `public`, D-43) | `GET /branding` (brand + enabled module keys) | public |
-| Me | `GET /me`, `GET /me/balances`, `GET /me/leave-requests`, `GET /me/ledger-entries` | any |
-| Leave types | `GET /leave-types`, `GET /leave-types/{id}`; `POST`, `PATCH /leave-types/{id}` | read any; write hr_admin |
-| Holidays (`holidays` module) | `GET /holidays`, `GET /holidays/{id}`; `POST`, `PATCH`, `DELETE /holidays/{id}` | read any; write hr_admin |
-| Leave requests | `GET /leave-requests` (visible to caller), `POST /leave-requests/preview` (dry run: days + balance, D-43), `POST /leave-requests` (`Idempotency-Key`), `GET /leave-requests/{id}`, `POST /leave-requests/{id}/approve`, `/reject`, `/cancel` | policy `view/create/decide/cancel` |
+| Me | `GET /me`, `GET /me/balances`, `GET /me/leave-requests`, `GET /me/ledger-entries`, `POST/DELETE /me/avatar`, `GET/POST/DELETE /me/approval-delegations` | any for avatar and reads; delegation write: manager, hr_admin |
+| Leave types | `GET /leave-types`, `GET /leave-types/{id}`; `POST`, `PATCH /leave-types/{id}` (`sandwich`, `accrual_frequency`) | read any; write hr_admin |
+| Holidays (`holidays` module) | `GET /holidays`, `GET /holidays/{id}`; `POST`, `PATCH`, `DELETE /holidays/{id}` (optional `location_id`) | read any; write hr_admin |
+| Locations | `GET/POST /locations`, `GET/PATCH/DELETE /locations/{id}` | read any; write hr_admin |
+| Leave requests | `GET /leave-requests` (visible to caller), `POST /leave-requests/preview`, `POST /leave-requests` (`Idempotency-Key`, optional `hours`), `GET /leave-requests/{id}`, `POST /leave-requests/{id}/approve`, `/reject`, `/cancel`, `POST/GET/DELETE /leave-requests/{id}/attachments`, `GET /leave-requests/{id}/pdf` | policy; attachment and PDF readers: owner, approver, hr_admin |
+| Team calendar | `GET /team-calendar?from&to` | any |
 | Approvals | `GET /approvals?filter[status]=pending` | manager, hr_admin |
-| Balances / ledger | `GET /users/{id}/balances`, `GET /users/{id}/ledger-entries`, `POST /users/{id}/ledger-entries` (adjustment) | self/manager-of/hr_admin; write hr_admin |
-| Users (LMS fields) | `GET /users`, `GET /users/{id}`, `PATCH /users/{id}` (department, manager, joining date, codes; role read-only here), `POST /users/{id}/deactivate`, `/activate` | hr_admin (manager: own reports, read) |
+| Balances / ledger | `GET /users/{id}/balances`, `GET /users/{id}/ledger-entries`, `POST /users/{id}/ledger-entries` (adjustment), `POST /users/{id}/encashments` | self/manager-of/hr_admin; writes hr_admin |
+| Users (LMS fields) | `GET /users`, `GET /users/{id}`, `GET /users/{id}/avatar`, `PATCH /users/{id}` (department, location, manager, joining date, codes; role read-only here), `POST /users/{id}/deactivate`, `/activate` | hr_admin (manager: own reports, read); avatar GET: any |
 | Identity admin (`user_management` module, D-22) | `GET/POST /admin/users` (`Idempotency-Key` on POST), `GET/PATCH /admin/users/{id}`, `POST /admin/users/{id}/enable`, `/disable`, `PUT /admin/users/{id}/roles`, `POST /admin/users/{id}/password-reset`. Keycloak down ⇒ 503 `IDP_UNAVAILABLE` on all of them, no local fallback (D-32). | admin |
-| Departments | `GET/POST /departments`, `GET/PATCH/DELETE /departments/{id}` | read any; write hr_admin |
+| Departments | `GET/POST /departments`, `GET/PATCH/DELETE /departments/{id}`, `PUT /departments/{id}/leave-quotas` | read any; write hr_admin |
+| Audit | `GET /audit-logs` | hr_admin |
 | Settings | `GET/PATCH /settings/branding`, `DELETE /settings/branding` (reset), `PUT/DELETE /settings/branding/assets/{asset}`, `GET /modules`, `PATCH /modules/{key}`; `GET/PATCH /settings/working-week` (D-30) | branding + modules: admin (branding GET: any); working week: hr_admin (GET: any) |
 | Reports (`reports` module) | `GET /reports/leave-requests`, `GET /reports/balances` (`Accept: application/json` or `text/csv`) | hr_admin |
 | Health (outside v1, no auth) | `GET /healthz`, `GET /readyz` | public |
@@ -389,7 +470,9 @@ See USE_CASES §3.6 (diagram + transition/actor table). Implementation: `LeaveSt
 | `modules.disabled` | `[]` | array of `Module` values ⊆ licensed | `Modules` |
 | `work.weekend_days` | `LMS_WEEKEND_DAYS` (default `6,7`) | array of int 1–7, distinct, ≤ 6 items (at least one working day); edited by `hr_admin` (UC-H16, D-30) | `WorkingDayCalculator::forRange` (new submissions/approval checks only; stored `days` are never recalculated) |
 
-`config/branding.php` holds the env defaults plus `disk => env('BRANDING_DISK', 's3')`. The `s3` disk (private bucket `AWS_BUCKET`) is configured by the standard `AWS_*` env vars (+ `AWS_ENDPOINT`, `AWS_USE_PATH_STYLE_ENDPOINT=true` for RustFS; any S3-compatible store in prod). In dev the bucket is created by the `s3-init` container. `config/filesystems.php` also keeps a `branding` local disk (`storage_path('app/branding')`) for single-node installs only; it breaks with >1 replica (D-24). Composer dep: `league/flysystem-aws-s3-v3`.
+`config/branding.php` holds the env defaults plus `disk => env('BRANDING_DISK', 's3')`. The `s3` disk (private bucket `AWS_BUCKET`) is configured by the standard `AWS_*` env vars (+ `AWS_ENDPOINT`, `AWS_USE_PATH_STYLE_ENDPOINT=true` for RustFS; any S3-compatible store in prod). In dev the bucket is created by the `s3-init` container. The same disk stores branding assets, leave attachments (`leave-attachments/{request public_id}/{ulid}.{ext}`), and avatars (`avatars/{user public_id}.{ext}`). Those two are streamed only by the authorized API routes, never by a public object URL (D-58). `config/filesystems.php` also keeps a `branding` local disk (`storage_path('app/branding')`) for single-node installs only; it breaks with >1 replica (D-24). Composer deps: `league/flysystem-aws-s3-v3`, `barryvdh/laravel-dompdf` (D-58).
+
+`config/lms.php` reads `LEAVE_YEAR_START_MONTH`, `LEAVE_HR_APPROVAL_DAYS` (default 5), and `LEAVE_ESCALATION_DAYS` (default 3). Code calls `config('lms.*')`, never `env()`.
 
 ### 8.2 Theming (Next.js, D-43; amends D-16)
 - Laravel exposes the effective brand at public `GET /api/v1/branding` (`name`, colours, `primary_contrast` computed in PHP by luminance, `logo_url`, `favicon_url`, enabled `modules`). Values are regex-validated hex on write and re-validated on read (fallback to default).
@@ -409,9 +492,8 @@ return [
         'reports'              => ['label' => 'Reports & exports',    'available' => true],
         'api'                  => ['label' => 'REST API',             'available' => true],
         'notifications'        => ['label' => 'Email notifications',  'available' => true],
-        'multi_level_approval' => ['label' => 'Multi-level approval', 'available' => false], // Later
-        'delegation'           => ['label' => 'Approval delegation',  'available' => false], // Later
         'user_management'      => ['label' => 'User management (Keycloak)', 'available' => true], // D-22
+        'multi_level'          => ['label' => 'Multi-level approval', 'available' => true], // D-54, licensed via MODULES_ENABLED
     ],
 ];
 ```
@@ -426,7 +508,7 @@ Gating points (all four are required):
 |---|---|
 | Routes | Middleware alias `module` (`EnsureModuleEnabled`): `Route::middleware('module:reports')->group(...)`. Calls `abort(404)` when off. |
 | Frontend | `modules` from `GET /api/v1/branding`: nav items hidden; module route segments (`/holidays`, `/admin/reports`, `/admin/identity-users`, …) call `notFound()` (Next 404). Laravel's 404 stays authoritative (D-43). |
-| Domain | `WorkingDayCalculator::forRange` checks `holidays`. Notification dispatch checks `notifications`. |
+| Domain | `WorkingDayCalculator::forRange` checks `holidays`. Notification dispatch checks `notifications` (including UC-M7). `ApproverResolver` checks `multi_level`. |
 | Admin UI | Next `/admin/settings/modules` lists `GET /modules`. Unlicensed/unavailable (`locked`) modules are disabled switches. `PATCH /modules/{key}` accepts only licensed+available keys (422 otherwise). `api` may be switched off: it only blocks third-party clients (D-43). |
 
 ## 9. 12-factor mapping
@@ -444,7 +526,7 @@ Gating points (all four are required):
 | IX | Disposability | Fast start. Octane drains workers on SIGTERM; `queue:work` finishes the current job on SIGTERM. |
 | X | Dev/prod parity | Same Dockerfile, same Postgres (17) and Redis (7) majors, same drivers, S3 API in dev too (RustFS). Only Mailpit and the Keycloak start mode (`start-dev` + realm import) differ. |
 | XI | Logs | `LOG_CHANNEL=stderr`, `LOG_STDERR_FORMATTER=Monolog\Formatter\JsonFormatter`. nginx access/error → stdout/stderr. No log files. |
-| XII | Admin processes | `docker compose run --rm app php artisan migrate --force`, `... lms:accrue-year 2027`, `... db:seed --class=DemoSeeder`; web: `docker compose run --rm web node scripts/auth-migrate.mjs`. In prod: same images as one-off jobs. |
+| XII | Admin processes | `docker compose run --rm app php artisan migrate --force`, `... lms:accrue-year 2027`, `... lms:accrue-month`, `... lms:escalate-stale-approvals`, `... db:seed --class=DemoSeeder`; web: `docker compose run --rm web node scripts/auth-migrate.mjs`. In prod: same images as one-off jobs. |
 
 ### Environment variables (`.env.example` must contain all)
 
@@ -460,6 +542,8 @@ Gating points (all four are required):
 | `MAIL_MAILER`, `MAIL_HOST`, `MAIL_PORT`, `MAIL_FROM_ADDRESS` | `smtp`, `mailpit`, `1025`, `noreply@example.test` | from-name = brand name |
 | `LMS_WEEKEND_DAYS` | `6,7` | ISO weekdays; default only, `hr_admin` may override via `work.weekend_days` (D-30) |
 | `LEAVE_YEAR_START_MONTH` | `1` | 1–12, first month of the leave year (D-26). `4` = April–March. |
+| `LEAVE_HR_APPROVAL_DAYS` | `5` | Integer ≥ 1. Used only when module `multi_level` is enabled (D-54). |
+| `LEAVE_ESCALATION_DAYS` | `3` | Integer ≥ 1. Pending age before UC-M7 mails `hr_admin`. |
 | `LMS_SL_MAX_BACKDATE_DAYS` | `7` | seed default for SL `max_backdate_days` |
 | `APP_BRAND_NAME`, `BRAND_PRIMARY_COLOR`, `BRAND_ACCENT_COLOR` | `Leave Manager`, `#1f6feb`, `#0e8a16` | |
 | `MODULES_ENABLED` | `holidays,reports,api,notifications,user_management` | licensed set; drop `user_management` for directory-backed realms (D-34) |
@@ -504,7 +588,7 @@ Gating points (all four are required):
 
 | Concern | Control |
 |---|---|
-| AuthN web | BFF (D-43, D-45): Keycloak OIDC auth code (client `lms-web`, `state` + `nonce` + PKCE S256, ID token verified against the JWKS) run server-side by Better Auth in `web`. Tokens stored in `lms_auth.account`, encrypted at rest; the browser holds only the HttpOnly SameSite=Lax session cookies, never a token. Every API call carries the access token to Laravel, which verifies it (`KeycloakJwtGuard`), provisions/syncs the user and checks `is_active`. Logout is RP-initiated (end-session with `id_token_hint`). Passwords, MFA, lockout and brute-force detection live in Keycloak. |
+| AuthN web | BFF (D-52, amends D-20 and D-43): the welcome-page form posts username and password to `POST /bff/login`. The BFF exchanges them at Keycloak with the resource-owner password grant for confidential client `lms-web` only and does not store the password. The browser is not redirected to Keycloak's login UI. Tokens stay in `lms_auth.account`, encrypted at rest (D-45); the browser holds only the HttpOnly SameSite=Lax session cookies, never a token. Every API call carries the access token to Laravel, which verifies it (`KeycloakJwtGuard`), provisions/syncs the user and checks `is_active`. Logout is RP-initiated (end-session with `id_token_hint`). Direct Access Grants are enabled only on `lms-web`. Laravel stores no passwords. Lockout and brute-force detection stay in Keycloak. |
 | AuthN API | Bearer JWT (RS256) from Keycloak (client `lms-api-cli`, public + PKCE). Guard `keycloak-jwt` checks signature (JWKS cached in Redis, refetch on unknown `kid`), `iss`, `aud`/`azp` against `KEYCLOAK_ALLOWED_AUDIENCES`, `exp`/`nbf` with `KEYCLOAK_JWT_LEEWAY`. No app-issued tokens. Inactive user → 401. |
 | Roles | Keycloak realm roles are the RBAC authority; `users.role` (base role) and `users.is_admin` are caches refreshed on every login/API call. Roles change in the app only through UC-U6, by an `admin` (D-22, D-29). |
 | AuthZ | Role enum + **Policies** (`LeaveRequestPolicy`: `view, create, cancel, decide`; `UserPolicy` HR fields, `LeaveTypePolicy`, `HolidayPolicy`, `DepartmentPolicy`, `SettingsPolicy::updateWorkingWeek` → `hr_admin`; `SettingsPolicy::manageBranding`/`manageModules`, `UserPolicy::manageIdentity` (UC-U*) → `admin`, D-29). `Gate::before` is **not** used (HR must not approve their own requests). Every controller method calls `$this->authorize()` / `Gate::authorize()`. |
@@ -513,7 +597,7 @@ Gating points (all four are required):
 | Input | Form Requests on every write. Eloquent bindings only (no raw string SQL with input). Mass assignment via `$fillable`. |
 | Output | React escaping; no `dangerouslySetInnerHTML`. Brand colours injected only as validated hex CSS variables. Mail: Blade `{{ }}` escaping. |
 | Uploads | Mime + size + dimension validation. No SVG. Random hashed names. Private disk served via controller. |
-| Headers | nginx (edge, in front of web and app): `X-Content-Type-Options nosniff`, `X-Frame-Options DENY`, `Referrer-Policy strict-origin-when-cross-origin`, `server_tokens off`. Web responses only: `Content-Security-Policy` with a per-request script nonce (`$request_id`, also passed to Next as a request CSP header so Next stamps its inline scripts), `style-src 'self' 'unsafe-inline'` (antd runtime CSS-in-JS), `frame-ancestors 'none'`, no `form-action` (sign-in/logout redirect to Keycloak). Laravel responses (incl. `/api/docs`) get no CSP. HSTS at ingress. |
+| Headers | nginx (edge, in front of web and app): `X-Content-Type-Options nosniff`, `X-Frame-Options DENY`, `Referrer-Policy strict-origin-when-cross-origin`, `server_tokens off`. Web responses only: `Content-Security-Policy` with a per-request script nonce (`$request_id`, also passed to Next as a request CSP header so Next stamps its inline scripts), `style-src 'self' 'unsafe-inline'` (antd runtime CSS-in-JS), `frame-ancestors 'none'`, no `form-action` (logout still redirects to Keycloak; sign-in does not, D-52). Laravel responses (incl. `/api/docs`) get no CSP. HSTS at ingress. |
 | Data | No hard deletes of users or requests. Ledger append-only (model `update()`/`delete()` throw). |
 | Secrets | Only via env / orchestrator secrets. Never committed, never in the image. |
 
@@ -522,7 +606,7 @@ Gating points (all four are required):
 | Item | Spec |
 |---|---|
 | Realm | `lms` per deployment. Realm roles `employee`, `manager`, `hr_admin` (base, exactly one per user) and `admin` (additive: branding, modules, identity admin, D-29). Default role for new users: `employee`. Customers run **upstream** Keycloak and import/configure this realm; the LMS publishes no Keycloak image or theme (D-33). |
-| Clients | `lms-web`: confidential, standard flow only, PKCE S256 required, used server-side by the Next.js BFF (D-43), redirect `${APP_URL}/auth/callback/keycloak`, post-logout redirect `${APP_URL}/*`, no web origins, revoke refresh token on with max reuse 1. `lms-api-cli`: public, standard flow + PKCE S256, loopback redirect URIs. `lms-dev-cli` (**dev realm import only**): direct access grants for local smoke tests, audience mapper adds `lms-api-cli` so the API accepts its tokens, never imported in prod. All three: realm roles in `realm_access.roles` (mapper also on ID token + userinfo). `default-roles-lms` includes `employee`. `lms-admin`: confidential, **service account only** (client credentials, no browser flows), default client scopes `basic` + `kc-admin-api` (Keycloak 26.8 rejects Admin API tokens without the admin audience), service-account roles `realm-management`: `manage-users`, `view-users`, `query-users` (effective set also has `query-groups`, a composite of `view-users`) — never `realm-admin` (D-22, D-39). |
+| Clients | `lms-web`: confidential, Direct Access Grants enabled for the BFF's resource-owner password grant (D-52), standard flow remains configured and is not the interactive login, used server-side by the Next.js BFF, post-logout redirect `${APP_URL}/*`, no web origins, revoke refresh token on with max reuse 1. `lms-api-cli`: public, standard flow + PKCE S256, loopback redirect URIs. `lms-dev-cli` (**dev realm import only**): direct access grants for local smoke tests, audience mapper adds `lms-api-cli` so the API accepts its tokens, never imported in prod. All three: realm roles in `realm_access.roles` (mapper also on ID token + userinfo). `default-roles-lms` includes `employee`. `lms-admin`: confidential, **service account only** (client credentials, no browser flows), default client scopes `basic` + `kc-admin-api` (Keycloak 26.8 rejects Admin API tokens without the admin audience), service-account roles `realm-management`: `manage-users`, `view-users`, `query-users` (effective set also has `query-groups`, a composite of `view-users`) — never `realm-admin` (D-22, D-39). |
 | Claims used | `sub` → `users.keycloak_sub`, `email`, `email_verified`, `name`, `realm_access.roles`, optional `date_of_joining` (user-attribute mapper). |
 | Enterprise | User federation (LDAP / Active Directory), identity brokering (SAML 2.0, OIDC e.g. Entra ID / Azure AD, Google), MFA/OTP/WebAuthn, password policy — all configured in Keycloak per customer, no app change. Login page branding (display name, optional theme) is the customer's own Keycloak configuration (UC-B9, D-33). Directory-backed realms run without `user_management` (D-34). |
 | Resource authorization | Laravel Policies (direct manager approves, nobody approves own, HR override rules). Keycloak roles only say *what kind of user*. |
@@ -549,7 +633,8 @@ Gating points (all four are required):
 - Expand/contract for breaking changes: add nullable column → deploy code writing both → backfill (one-off command) → enforce NOT NULL / drop old in a later release.
 - Postgres-specific DDL (`btree_gist`, exclusion constraint, partial unique indexes, CHECKs) via `DB::statement()` inside migrations. Feature tests run on real Postgres, so these are tested.
 - Seeders: `LeaveTypeSeeder` (CL/SL/EL/LWP, idempotent `updateOrCreate` by code) runs in all envs. `DemoSeeder` runs **only** when `APP_ENV=local|testing`: departments CE/IT/MH/EC/IC/CL/CH from the original, 2026+2027 holidays, and the four **dev users** that also exist in the dev Keycloak realm import (`docker/keycloak/realm-lms.json`): `alice` (`alice@example.test`, employee, IT, manager = bob), `bob` (`bob@example.test`, manager, IT), `carol` (`carol@example.test`, hr_admin, HR), `dave` (`dave@example.test`, employee + `admin`, IT, D-29). Local rows are seeded with `keycloak_sub = null` and are linked by verified email on first login (USE_CASES §3.10). Passwords exist only in Keycloak (dev value documented in the realm file, DEV ONLY). No other demo users are seeded, because users without a Keycloak account cannot log in.
-- Migration file order: departments → users (alter stock: drop `password`, `remember_token`, `email_verified_at`, `password_reset_tokens`; add `public_id`, `keycloak_sub`, LMS columns) → leave_types → holidays → leave_requests → leave_request_actions → leave_ledger_entries → settings → user_admin_audits.
+- Migration file order (historical, then phase 19 alters): departments → users → leave_types → holidays → leave_requests → leave_request_actions → leave_ledger_entries → settings → user_admin_audits → approval_reminders. Phase 19 adds `locations` before the user and holiday location FKs, then `leave_request_attachments`, `department_leave_quotas`, `approval_delegations`, `audit_logs`, and the new columns (`hours`, `escalated_at`, `avatar_path`, `sandwich`, `accrual_frequency`, ledger `month`, ledger kind `encashment`).
+- Extra composer dependency allowed by D-58: `barryvdh/laravel-dompdf`. No other new package. Attachments and avatars use the existing `league/flysystem-aws-s3-v3` disk. Nginx `client_max_body_size` is already 8m, which covers the 5 MB attachment.
 - Keycloak's schema lives in the separate `keycloak` database and is migrated by Keycloak itself on start.
 - Better Auth's schema (`user`, `session`, `account`, `verification`, `rateLimit`) lives in the separate `lms_auth` database and is migrated by the one-off `node scripts/auth-migrate.mjs` in the `web` image (owner: frontend, D-45), before web replicas roll out. Laravel never reads it.
 

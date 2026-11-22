@@ -26,6 +26,18 @@ final class LeaveMathTest extends TestCase
         $this->assertSame(1.0, self::days('2026-12-21', '2026-12-21'));
     }
 
+    public function test_sandwich_counts_weekends_and_holidays(): void
+    {
+        $this->assertSame(7.0, WorkingDayCalculator::count(
+            CarbonImmutable::parse('2026-12-21'),
+            CarbonImmutable::parse('2026-12-27'),
+            DayPart::Full,
+            [6, 7],
+            ['2026-12-25'],
+            true,
+        ));
+    }
+
     public function test_custom_weekend_and_half_day(): void
     {
         $this->assertSame(5.0, self::days('2026-12-21', '2026-12-27', weekend: [5, 6]));

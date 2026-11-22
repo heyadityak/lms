@@ -31,4 +31,10 @@ final class AccrualCalculator
     {
         return floor($days * 2) / 2;
     }
+
+    /** One calendar month of a yearly quota, 3 decimal places, half up. */
+    public static function monthly(float $quota): float
+    {
+        return round($quota / 12, 3);
+    }
 }

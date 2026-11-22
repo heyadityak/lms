@@ -17,6 +17,11 @@ final class HolidayResource extends JsonResource
     /** @return array<string, mixed> */
     public function toArray(Request $request): array
     {
-        return ['id' => $this->public_id, 'date' => $this->date->toDateString(), 'name' => $this->name];
+        return [
+            'id' => $this->public_id,
+            'date' => $this->date->toDateString(),
+            'name' => $this->name,
+            'location' => $this->location === null ? null : ['id' => $this->location->public_id, 'code' => $this->location->code, 'name' => $this->location->name],
+        ];
     }
 }

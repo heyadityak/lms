@@ -38,7 +38,7 @@ final class SettingsModulesBrandingTest extends TestCase
 
     public function test_modules_are_licensed_and_available_and_not_disabled(): void
     {
-        config(['modules.licensed' => ['holidays', 'api', 'reports', 'multi_level_approval']]);
+        config(['modules.licensed' => ['holidays', 'api', 'reports', 'multi_level']]);
         $this->freshSettings()->set('modules.disabled', ['reports']);
         $modules = $this->app->make(Modules::class);
 
@@ -46,7 +46,7 @@ final class SettingsModulesBrandingTest extends TestCase
         $this->assertTrue($modules->enabled(Module::Api));
         $this->assertFalse($modules->enabled(Module::Reports)); // disabled by admin
         $this->assertFalse($modules->enabled(Module::Notifications)); // not licensed
-        $this->assertFalse($modules->enabled(Module::MultiLevelApproval)); // licensed but not available
+        $this->assertTrue($modules->enabled(Module::MultiLevel)); // licensed and available
         $this->assertSame(['label' => 'Reports & exports', 'available' => true, 'licensed' => true, 'enabled' => false], $modules->all()['reports']);
     }
 

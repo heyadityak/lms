@@ -20,7 +20,7 @@ final class SubmitLeaveRequest
 {
     public function __construct(private readonly LeaveRequestValidator $validator, private readonly ApproverResolver $approvers) {}
 
-    /** @param  array{leave_type_id: string, start_date: string, end_date: string, day_part?: string|null, reason: string, handover_note?: string|null}  $data */
+    /** @param  array{leave_type_id: string, start_date: string, end_date: string, day_part?: string|null, hours?: int|null, reason: string, handover_note?: string|null}  $data */
     public function handle(User $user, array $data): LeaveRequest
     {
         try {
@@ -38,10 +38,15 @@ final class SubmitLeaveRequest
                     'reason' => $data['reason'],
                     'handover_note' => $data['handover_note'] ?? null,
                 ]);
-                $request->forceFill(['user_id' => $user->id, 'days' => $checked['days'], 'status' => LeaveStatus::Pending])->save();
+                $request->forceFill([
+                    'user_id' => $user->id,
+                    'days' => $checked['days'],
+                    'hours' => $checked['hours'],
+                    'status' => LeaveStatus::Pending,
+                ])->save();
                 $request->actions()->create(['actor_id' => $user->id, 'action' => LeaveAction::Submitted, 'from_status' => null, 'to_status' => LeaveStatus::Pending]);
 
-                LeaveTransition::notify($this->approvers->approversFor($user), new LeaveRequestSubmitted($request));
+                LeaveTransition::notify($this->approvers->approversFor($user, $checked['days']), new LeaveRequestSubmitted($request));
 
                 return $request;
             });

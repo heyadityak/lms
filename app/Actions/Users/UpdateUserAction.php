@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Actions\Users;
 
 use App\Actions\Accrual\GrantInitialEntitlement;
+use App\Actions\Audit\RecordAuditLog;
 use App\Exceptions\DomainException;
 use App\Models\Department;
+use App\Models\Location;
 use App\Models\User;
 use App\Services\UserAdminGuard;
 use App\Support\Keycloak\KeycloakAdminClient;
@@ -26,6 +28,7 @@ final class UpdateUserAction
         private readonly KeycloakAdminClient $keycloak,
         private readonly UserAdminGuard $guard,
         private readonly RecordUserAdminAudit $audits,
+        private readonly RecordAuditLog $lmsAudit,
     ) {}
 
     /**
@@ -34,7 +37,18 @@ final class UpdateUserAction
     public function handle(User $user, array $data, ?User $actor = null, bool $identity = false): User
     {
         if (! $identity) {
-            return DB::transaction(fn (): User => $this->persist($user, $data));
+            return DB::transaction(function () use ($user, $data, $actor): User {
+                $before = self::snapshot($user);
+                $saved = $this->persist($user, $data);
+                if ($actor !== null) {
+                    $this->lmsAudit->write($actor, 'user', $saved->public_id, 'updated', [
+                        'before' => $before,
+                        'after' => self::snapshot($saved),
+                    ]);
+                }
+
+                return $saved;
+            });
         }
         if ($actor === null || $user->keycloak_sub === null) {
             abort(404);
@@ -102,6 +116,9 @@ final class UpdateUserAction
         if (array_key_exists('department_id', $data)) {
             $data['department_id'] = $data['department_id'] === null ? null : Department::query()->where('public_id', $data['department_id'])->value('id');
         }
+        if (array_key_exists('location_id', $data)) {
+            $data['location_id'] = $data['location_id'] === null ? null : Location::query()->where('public_id', $data['location_id'])->value('id');
+        }
         if (array_key_exists('manager_id', $data)) {
             $data['manager_id'] = $data['manager_id'] === null ? null : User::query()->where('public_id', $data['manager_id'])->value('id');
             if ($data['manager_id'] !== null && $data['manager_id'] !== $user->manager_id) {
@@ -116,6 +133,20 @@ final class UpdateUserAction
         }
 
         return $user;
+    }
+
+    /** @return array<string, mixed> */
+    private static function snapshot(User $user): array
+    {
+        return [
+            'department_id' => $user->department_id,
+            'manager_id' => $user->manager_id,
+            'location_id' => $user->location_id,
+            'employee_code' => $user->employee_code,
+            'designation' => $user->designation,
+            'employment_type' => $user->employment_type,
+            'date_of_joining' => $user->date_of_joining?->toDateString(),
+        ];
     }
 
     /** USE_CASES §3.9: no self-manager, no cycle (walk up to depth 10). Serialised so two concurrent edits cannot close a loop. */

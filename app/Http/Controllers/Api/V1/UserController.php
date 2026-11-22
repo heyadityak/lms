@@ -28,7 +28,7 @@ final class UserController
         $sort = (string) $request->validated('sort', 'name');
         $actor = $request->user();
 
-        $query = User::query()->with(['department', 'manager'])
+        $query = User::query()->with(['department', 'manager', 'location'])
             ->when($actor->role !== Role::HrAdmin, fn (Builder $q) => $q->where('manager_id', $actor->id))
             ->when(isset($filter['department']), fn (Builder $q) => $q->whereHas('department', fn (Builder $d) => $d->where('public_id', $filter['department'])))
             ->when(isset($filter['is_active']), fn (Builder $q) => $q->where('is_active', in_array($filter['is_active'], ['true', '1'], true)))
@@ -51,7 +51,7 @@ final class UserController
 
     public function update(UpdateUserRequest $request, User $user, UpdateUserAction $update): JsonResponse
     {
-        return self::resource($update->handle($user, $request->validated()));
+        return self::resource($update->handle($user, $request->validated(), $request->user()));
     }
 
     public function deactivate(User $user, DeactivateUser $deactivate, Request $request): JsonResponse
@@ -62,10 +62,10 @@ final class UserController
         return self::resource($user->refresh());
     }
 
-    public function activate(User $user, ActivateUser $activate): JsonResponse
+    public function activate(User $user, ActivateUser $activate, Request $request): JsonResponse
     {
         Gate::authorize('deactivate', $user);
-        $activate->handle($user);
+        $activate->handle($user, $request->user());
 
         return self::resource($user->refresh());
     }
@@ -79,6 +79,6 @@ final class UserController
 
     private static function resource(User $user): JsonResponse
     {
-        return (new UserResource($user->load(['department', 'manager'])))->envelope();
+        return (new UserResource($user->load(['department', 'manager', 'location'])))->envelope();
     }
 }

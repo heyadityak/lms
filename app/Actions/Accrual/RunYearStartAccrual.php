@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Actions\Accrual;
 
+use App\Enums\AccrualFrequency;
 use App\Enums\LedgerKind;
 use App\Models\LeaveType;
 use App\Models\User;
 use App\Services\AccrualCalculator;
+use App\Services\DepartmentQuota;
 use App\Services\LeaveBalanceService;
 use App\Support\LeaveYear;
 use Illuminate\Support\Facades\DB;
@@ -40,10 +42,14 @@ final class RunYearStartAccrual
                 foreach ($types as $type) {
                     $closing = $this->balances->balance($user, $type, $year - 1);
                     $carry = AccrualCalculator::carry($closing, $type->carry_forward_cap);
-                    $grant = LeaveYear::of($user->date_of_joining) === $year
-                        ? AccrualCalculator::prorate($type->annual_quota, $user->date_of_joining->month, $startMonth)
-                        : $type->annual_quota;
-                    $grant = AccrualCalculator::clipGrant($grant, $carry, $type->max_balance);
+                    $quota = DepartmentQuota::for($user, $type);
+                    $grant = 0.0;
+                    if ($type->accrual_frequency !== AccrualFrequency::Monthly) {
+                        $grant = LeaveYear::of($user->date_of_joining) === $year
+                            ? AccrualCalculator::prorate($quota, $user->date_of_joining->month, $startMonth)
+                            : $quota;
+                        $grant = AccrualCalculator::clipGrant($grant, $carry, $type->max_balance);
+                    }
 
                     $rows = [
                         [LedgerKind::Lapse, $year - 1, -max(0.0, $closing - $carry), 'Year-start lapse above carry-forward cap'],

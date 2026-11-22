@@ -57,6 +57,10 @@ tags:
     description: Ledger-derived balances and ledger history.
   - name: Departments
     description: Organisational departments.
+  - name: Locations
+    description: Offices or sites. Holiday calendars can be global or per location.
+  - name: Audit
+    description: HR change log. Not leave-request transitions.
   - name: Settings
     description: Branding and modules (white-label, role `admin`); working week (role `hr_admin`, D-30); public branding for the frontend (D-43).
   - name: Reports
@@ -141,6 +145,107 @@ paths:
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /me/avatar:
+    post:
+      tags: [Me]
+      operationId: uploadMyAvatar
+      summary: Upload or replace my avatar
+      description: |
+        PNG, JPEG, or WebP, max 1 MB. SVG is rejected (415). Stored on the S3 disk
+        (`BRANDING_DISK`) and streamed only by `GET /users/{id}/avatar` (UC-E11).
+        Replaces any previous file. 204 has no body.
+      x-roles: [employee, manager, hr_admin]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, image/webp
+      responses:
+        '204': {description: Stored.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Me]
+      operationId: deleteMyAvatar
+      summary: Remove my avatar
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '204': {description: Removed.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /me/approval-delegations:
+    get:
+      tags: [Me, Approvals]
+      operationId: getMyApprovalDelegation
+      summary: My approval delegation, if I have one
+      description: One row per caller (UC-M5). 404 when there is none.
+      x-roles: [manager, hr_admin]
+      responses:
+        '200':
+          description: The delegation.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalDelegationEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Me, Approvals]
+      operationId: createMyApprovalDelegation
+      summary: Delegate my approvals for a date window
+      description: |
+        Body `delegate_id`, `start_date`, `end_date`. The delegate is an active
+        `manager` or `hr_admin` and is not the caller. One row. A second POST is
+        422. While the window covers today, `ApproverResolver` uses the delegate (UC-M5).
+      x-roles: [manager, hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApprovalDelegationWrite'}
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location:
+              description: URL of this delegation (`/me/approval-delegations`).
+              schema: {type: string, format: uri}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalDelegationEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Me, Approvals]
+      operationId: deleteMyApprovalDelegation
+      summary: Remove my approval delegation
+      x-roles: [manager, hr_admin]
+      responses:
+        '204': {description: Removed.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /leave-requests:
     get:
       tags: [Leave requests]
@@ -172,6 +277,7 @@ paths:
       summary: Apply for leave
       description: |
         Runs validation V1–V9 (USE_CASES §3.4). `days` is computed by the server.
+        Optional `hours` (1–8) is a single-day request and is mutually exclusive with a half day (UC-E14).
         Supports `Idempotency-Key` (Redis, 24 h): a retry with the same key and body
         replays the original response with `Idempotent-Replayed: true`.
       x-roles: [employee, manager, hr_admin]
@@ -282,7 +388,12 @@ paths:
       tags: [Leave requests, Approvals]
       operationId: approveLeaveRequest
       summary: Approve a pending request
-      description: Re-checks overlap and balance, writes a `debit` ledger entry when the type tracks balance.
+      description: |
+        The caller must be in the approver set (USE_CASES §3.6): the line manager, that
+        manager's delegate while the delegation covers today, or `hr_admin`. When module
+        `multi_level` is enabled and `days` ≥ `LEAVE_HR_APPROVAL_DAYS`, only `hr_admin`
+        may approve. Re-checks overlap and balance, writes a `debit` ledger entry when
+        the type tracks balance.
       x-roles: [manager, hr_admin]
       requestBody:
         required: false
@@ -345,12 +456,116 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /leave-requests/{leaveRequestId}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/LeaveRequestId'
+    get:
+      tags: [Leave requests]
+      operationId: getLeaveRequestAttachment
+      summary: Download the request's attachment
+      description: |
+        One file. Owner, a user in the current approver set, `decided_by`, or `hr_admin`.
+        404 when there is no file or the caller may not read it (UC-E10).
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: The file.
+          headers:
+            Content-Disposition:
+              description: '`attachment`; filename is the stored name.'
+              schema: {type: string}
+          content:
+            image/png:
+              schema: {type: string, contentMediaType: image/png}
+            image/jpeg:
+              schema: {type: string, contentMediaType: image/jpeg}
+            application/pdf:
+              schema: {type: string, contentMediaType: application/pdf}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Leave requests]
+      operationId: uploadLeaveRequestAttachment
+      summary: Attach one file to a pending request
+      description: |
+        Owner only, and only while status is `pending`. PNG, JPEG, or PDF, max 5 MB.
+        SVG is 415. A second file while one exists is 422 (delete it first). Stored on
+        the S3 disk (UC-E10).
+      x-roles: [employee, manager, hr_admin]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, application/pdf
+      responses:
+        '201':
+          description: Stored. Body is metadata, not the bytes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LeaveAttachmentEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Leave requests]
+      operationId: deleteLeaveRequestAttachment
+      summary: Remove the attachment from a pending request
+      description: Owner only, while status is `pending`.
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '204': {description: Removed.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /leave-requests/{leaveRequestId}/pdf:
+    parameters:
+      - $ref: '#/components/parameters/LeaveRequestId'
+    get:
+      tags: [Leave requests]
+      operationId: getLeaveRequestPdf
+      summary: Download the leave application as PDF
+      description: |
+        Owner, a user in the current approver set, `decided_by`, or `hr_admin`.
+        Rendered on demand (not stored). 404 when the caller may not read the request (UC-E12).
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: The PDF.
+          headers:
+            Content-Disposition:
+              description: '`attachment`; filename `leave-request-{id}.pdf`.'
+              schema: {type: string}
+          content:
+            application/pdf:
+              schema: {type: string, contentMediaType: application/pdf}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /approvals:
     get:
       tags: [Approvals]
       operationId: listApprovals
       summary: Approval inbox
-      description: Requests the caller may decide (direct reports; any for hr_admin, never own).
+      description: |
+        Requests the caller may decide (USE_CASES §3.6). A manager sees direct reports
+        that were not routed to HR, plus requests delegated to them, and not requests
+        they have delegated away. `hr_admin` sees every pending request except their own.
       x-roles: [manager, hr_admin]
       parameters:
         - name: filter[status]
@@ -369,6 +584,45 @@ paths:
         '200': {$ref: '#/components/responses/LeaveRequestList'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /team-calendar:
+    get:
+      tags: [Leave requests]
+      operationId: listTeamCalendar
+      summary: Approved leave in the caller's department
+      description: |
+        Any role. `from` and `to` are required. Approved requests only, overlapping
+        that window. Same department as the caller. No department means only the
+        caller's own leave. No reason and no pending rows (UC-E13). Not paginated.
+        Inclusive span longer than 366 days (`to - from > 365`) is 422.
+      x-roles: [employee, manager, hr_admin]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: true
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: Calendar rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/TeamCalendarEntry'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
@@ -731,6 +985,63 @@ paths:
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /users/{userId}/avatar:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Users]
+      operationId: getUserAvatar
+      summary: The user's avatar image, or 404 when unset
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: The image.
+          content:
+            image/png:
+              schema: {type: string, contentMediaType: image/png}
+            image/jpeg:
+              schema: {type: string, contentMediaType: image/jpeg}
+            image/webp:
+              schema: {type: string, contentMediaType: image/webp}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /users/{userId}/encashments:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Balances, Users]
+      operationId: createEncashment
+      summary: Encash available leave
+      description: |
+        Appends an `encashment` ledger row for the current leave year. `days` in the
+        body is positive; the stored amount is negative. 422 `INSUFFICIENT_BALANCE`
+        when `days` exceeds available. The type must track balance (UC-H11).
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EncashmentCreate'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data: {$ref: '#/components/schemas/LedgerEntry'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/LeaveRuleViolation'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /admin/users:
     get:
       tags: [Identity admin]
@@ -1022,6 +1333,159 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /departments/{departmentId}/leave-quotas:
+    parameters:
+      - $ref: '#/components/parameters/DepartmentId'
+    put:
+      tags: [Departments]
+      operationId: putDepartmentLeaveQuota
+      summary: Set or clear one department leave-quota override
+      description: |
+        `annual_quota` upserts the override for `leave_type_id` (200).
+        `null` deletes it (204). Grants use the override when the row exists (UC-H10).
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DepartmentLeaveQuotaWrite'}
+      responses:
+        '200':
+          description: Override saved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DepartmentLeaveQuotaEnvelope'}
+        '204': {description: Override removed.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /locations:
+    get:
+      tags: [Locations]
+      operationId: listLocations
+      summary: Locations
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: All locations (not paginated).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta, links]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Location'}
+                  meta: {type: object}
+                  links: {type: object}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      tags: [Locations]
+      operationId: createLocation
+      summary: Create a location
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LocationWrite'}
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location:
+              schema: {type: string, format: uri}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LocationEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /locations/{locationId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Locations]
+      operationId: getLocation
+      summary: Location detail
+      x-roles: [employee, manager, hr_admin]
+      responses:
+        '200':
+          description: The location.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LocationEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      tags: [Locations]
+      operationId: updateLocation
+      summary: Update a location
+      x-roles: [hr_admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LocationWrite'}
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LocationEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      tags: [Locations]
+      operationId: deleteLocation
+      summary: Delete a location that has no users and no holidays
+      x-roles: [hr_admin]
+      responses:
+        '204': {description: Deleted.}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /audit-logs:
+    get:
+      tags: [Audit]
+      operationId: listAuditLogs
+      summary: HR audit log
+      description: |
+        Department, leave type, holiday, location, quota, encashment, and user LMS-field
+        changes. Not leave-request transitions and not identity-admin audits (UC-H15).
+        Newest first.
+      x-roles: [hr_admin]
+      parameters:
+        - $ref: '#/components/parameters/PageNumber'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of audit rows.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuditLogList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
   /branding:
@@ -1435,6 +1899,11 @@ components:
       in: path
       required: true
       schema: {$ref: '#/components/schemas/Ulid'}
+    LocationId:
+      name: locationId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Ulid'}
     PageNumber:
       name: page[number]
       in: query
@@ -1563,7 +2032,7 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
     Conflict:
-      description: State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LAST_ADMIN`).
+      description: State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LOCATION_NOT_EMPTY`, `LAST_ADMIN`).
       headers:
         Retry-After: {$ref: '#/components/headers/Retry-After'}
       content:
@@ -1809,7 +2278,21 @@ components:
     Days:
       type: number
       multipleOf: 0.5
-      description: Day amount, always a multiple of 0.5.
+      minimum: 0
+      description: Quota or adjustment amount, a multiple of 0.5.
+    RequestDays:
+      type: number
+      multipleOf: 0.125
+      exclusiveMinimum: 0
+      description: Server-computed leave length. A full day, 0.5, or hours/8.
+    BalanceAmount:
+      type: number
+      minimum: 0
+      description: |
+        Non-negative derived balance (ledger sum, or that sum minus pending).
+        Zero is allowed. Not a multiple of 0.5 or 0.125: an hourly debit leaves
+        eighths (for example 29.75) and a monthly grant or encashment leaves up
+        to 3 decimal places (D-53, D-58).
     Role:
       type: string
       enum: [employee, manager, hr_admin]
@@ -1826,13 +2309,19 @@ components:
       enum: [full, first_half, second_half]
     LedgerKind:
       type: string
-      enum: [grant, carry_forward, lapse, debit, reversal, adjustment]
+      enum: [grant, carry_forward, lapse, debit, reversal, adjustment, encashment]
+    AccrualFrequency:
+      type: string
+      enum: [yearly, monthly]
     LeaveAction:
       type: string
       enum: [submitted, approved, rejected, cancelled]
     ModuleKey:
       type: string
-      enum: [holidays, reports, api, notifications, user_management, multi_level_approval, delegation]
+      enum: [holidays, reports, api, notifications, user_management, multi_level]
+      description: |
+        `multi_level` is available and is licensed only when listed in `MODULES_ENABLED` (D-54).
+        It changes who approves long requests. It does not gate a route.
     HexColor:
       type: string
       pattern: '^#[0-9a-fA-F]{6}$'
@@ -1896,6 +2385,7 @@ components:
         - INVALID_TRANSITION
         - IDEMPOTENCY_IN_PROGRESS
         - DEPARTMENT_NOT_EMPTY
+        - LOCATION_NOT_EMPTY
         - UNSUPPORTED_MEDIA_TYPE
         - VALIDATION_FAILED
         - LEAVE_TYPE_INACTIVE
@@ -1943,7 +2433,7 @@ components:
 
     User:
       type: object
-      required: [id, name, email, role, is_admin, department, manager, employee_code, designation, employment_type, date_of_joining, is_active, last_login_at, created_at]
+      required: [id, name, email, role, is_admin, department, location, manager, employee_code, designation, employment_type, date_of_joining, is_active, avatar_url, last_login_at, created_at]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         name: {type: string, readOnly: true, description: From Keycloak.}
@@ -1954,6 +2444,10 @@ components:
           oneOf:
             - $ref: '#/components/schemas/DepartmentSummary'
             - type: 'null'
+        location:
+          oneOf:
+            - $ref: '#/components/schemas/LocationSummary'
+            - type: 'null'
         manager:
           oneOf:
             - $ref: '#/components/schemas/UserSummary'
@@ -1963,6 +2457,10 @@ components:
         employment_type: {type: [string, 'null']}
         date_of_joining: {type: [string, 'null'], format: date}
         is_active: {type: boolean}
+        avatar_url:
+          type: [string, 'null']
+          format: uri
+          description: Absolute URL of `GET /users/{id}/avatar`, or null when unset.
         last_login_at: {type: [string, 'null'], format: date-time}
         created_at: {type: string, format: date-time}
     UserEnvelope:
@@ -1979,6 +2477,7 @@ components:
       description: HR-owned fields only. `role`, `name`, `email` are rejected (422 `ROLE_READ_ONLY` / `VALIDATION_FAILED`).
       properties:
         department_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
+        location_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
         manager_id: {oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]}
         date_of_joining: {type: string, format: date}
         employee_code: {type: [string, 'null'], maxLength: 50}
@@ -1987,12 +2486,16 @@ components:
 
     Department:
       type: object
-      required: [id, code, name, users_count]
+      required: [id, code, name, users_count, leave_quotas]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         code: {type: string, maxLength: 20}
         name: {type: string, maxLength: 100}
         users_count: {type: integer, minimum: 0}
+        leave_quotas:
+          type: array
+          description: Department overrides. Empty when the type's own annual_quota applies.
+          items: {$ref: '#/components/schemas/DepartmentLeaveQuota'}
     DepartmentWrite:
       type: object
       additionalProperties: false
@@ -2003,7 +2506,7 @@ components:
 
     LeaveType:
       type: object
-      required: [id, code, name, annual_quota, tracks_balance, carry_forward_cap, max_balance, allow_half_day, max_backdate_days, is_active]
+      required: [id, code, name, annual_quota, tracks_balance, carry_forward_cap, max_balance, allow_half_day, max_backdate_days, sandwich, accrual_frequency, is_active]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         code: {type: string, maxLength: 10}
@@ -2018,6 +2521,8 @@ components:
           oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]
         allow_half_day: {type: boolean}
         max_backdate_days: {type: integer, minimum: 0}
+        sandwich: {type: boolean, description: 'When true, weekends and holidays inside the range count (D-56). Default false.'}
+        accrual_frequency: {$ref: '#/components/schemas/AccrualFrequency'}
         is_active: {type: boolean}
     LeaveTypeCreate:
       type: object
@@ -2032,6 +2537,8 @@ components:
         max_balance: {oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]}
         allow_half_day: {type: boolean, default: true}
         max_backdate_days: {type: integer, minimum: 0, default: 0}
+        sandwich: {type: boolean, default: false}
+        accrual_frequency: {$ref: '#/components/schemas/AccrualFrequency'}
     LeaveTypeUpdate:
       type: object
       additionalProperties: false
@@ -2044,15 +2551,22 @@ components:
         max_balance: {oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]}
         allow_half_day: {type: boolean}
         max_backdate_days: {type: integer, minimum: 0}
+        sandwich: {type: boolean}
+        accrual_frequency: {$ref: '#/components/schemas/AccrualFrequency'}
         is_active: {type: boolean}
 
     Holiday:
       type: object
-      required: [id, date, name]
+      required: [id, date, name, location]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         date: {type: string, format: date}
         name: {type: string, maxLength: 100}
+        location:
+          description: Null means the holiday applies to every location.
+          oneOf:
+            - $ref: '#/components/schemas/LocationSummary'
+            - type: 'null'
     HolidayWrite:
       type: object
       additionalProperties: false
@@ -2060,6 +2574,9 @@ components:
       properties:
         date: {type: string, format: date}
         name: {type: string, maxLength: 100}
+        location_id:
+          description: Omit or null for a holiday that applies to every location.
+          oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]
 
     LeaveRequestAction:
       type: object
@@ -2075,7 +2592,7 @@ components:
         created_at: {type: string, format: date-time}
     LeaveRequest:
       type: object
-      required: [id, user, leave_type, start_date, end_date, day_part, days, status, reason, handover_note, leave_year, is_taken, decided_by, decided_at, decision_comment, cancelled_at, created_at, updated_at]
+      required: [id, user, leave_type, start_date, end_date, day_part, hours, days, status, reason, handover_note, leave_year, is_taken, decided_by, decided_at, decision_comment, cancelled_at, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Ulid'}
         user: {$ref: '#/components/schemas/UserSummary'}
@@ -2083,7 +2600,12 @@ components:
         start_date: {type: string, format: date}
         end_date: {type: string, format: date}
         day_part: {$ref: '#/components/schemas/DayPart'}
-        days: {$ref: '#/components/schemas/Days'}
+        hours:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 8
+          description: Set on an hourly single-day request. Null otherwise. `days = hours / 8`.
+        days: {$ref: '#/components/schemas/RequestDays'}
         status: {$ref: '#/components/schemas/LeaveStatus'}
         reason: {type: string}
         handover_note: {type: [string, 'null']}
@@ -2119,22 +2641,29 @@ components:
         start_date: {type: string, format: date}
         end_date: {type: string, format: date}
         day_part: {$ref: '#/components/schemas/DayPart'}
+        hours:
+          type: integer
+          minimum: 1
+          maximum: 8
+          description: Optional. Single day only, and not together with a half day.
         reason: {type: string, minLength: 3, maxLength: 1000}
         handover_note: {type: [string, 'null'], maxLength: 2000}
     LeaveRequestPreview:
       type: object
       required: [days, leave_year, tracks_balance, available_before, available_after]
       properties:
-        days: {$ref: '#/components/schemas/Days'}
+        days: {$ref: '#/components/schemas/RequestDays'}
         leave_year: {type: integer, description: Leave year label (D-26).}
         tracks_balance: {type: boolean, description: false for e.g. LWP; then both balances are null.}
         available_before:
+          description: Null when `tracks_balance` is false.
           oneOf:
-            - $ref: '#/components/schemas/Days'
+            - $ref: '#/components/schemas/BalanceAmount'
             - type: 'null'
         available_after:
+          description: '`available_before` minus `days`. Null when `tracks_balance` is false.'
           oneOf:
-            - $ref: '#/components/schemas/Days'
+            - $ref: '#/components/schemas/BalanceAmount'
             - type: 'null'
     DecisionComment:
       type: object
@@ -2151,8 +2680,12 @@ components:
     Balance:
       type: object
       description: |
-        entitled = grant + carry_forward + lapse + adjustment; used = -(debit + reversal);
+        entitled = grant + carry_forward + lapse + adjustment;
+        used = -(debit + reversal + encashment);
         balance = entitled - used = SUM(ledger); available = balance - pending.
+        These amounts are plain numbers, not `Days` or `RequestDays`: an hourly
+        debit leaves eighths and a monthly grant or encashment leaves up to 3
+        decimal places. `available` may be negative when pending exceeds the ledger.
       required: [leave_type, year, entitled, used, pending, balance, available]
       properties:
         leave_type: {$ref: '#/components/schemas/LeaveTypeSummary'}
@@ -2170,7 +2703,9 @@ components:
         leave_type: {$ref: '#/components/schemas/LeaveTypeSummary'}
         year: {type: integer}
         kind: {$ref: '#/components/schemas/LedgerKind'}
-        days: {type: number, multipleOf: 0.5, description: Signed.}
+        days:
+          type: number
+          description: Signed. Up to 3 decimal places. Not limited to multiples of 0.5 (monthly grants, hourly debits, encashment).
         leave_request_id:
           oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]
         actor:
@@ -2191,6 +2726,150 @@ components:
           not: {const: 0}
           description: Signed, non-zero.
         note: {type: string, minLength: 3, maxLength: 255}
+    EncashmentCreate:
+      type: object
+      additionalProperties: false
+      required: [leave_type_id, days, note]
+      properties:
+        leave_type_id: {$ref: '#/components/schemas/Ulid'}
+        days:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 999
+          description: Positive. Stored on the ledger as a negative `encashment` row. Must be ≤ available.
+        note: {type: string, minLength: 3, maxLength: 255}
+
+    LocationSummary:
+      type: object
+      required: [id, code, name]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        code: {type: string}
+        name: {type: string}
+    Location:
+      type: object
+      required: [id, code, name]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        code: {type: string, maxLength: 20}
+        name: {type: string, maxLength: 100}
+    LocationWrite:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code: {type: string, maxLength: 20}
+        name: {type: string, maxLength: 100}
+    LocationEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/Location'}
+        meta: {type: object}
+        links: {type: object}
+
+    DepartmentLeaveQuota:
+      type: object
+      required: [leave_type_id, annual_quota]
+      properties:
+        leave_type_id: {$ref: '#/components/schemas/Ulid'}
+        annual_quota: {$ref: '#/components/schemas/Days'}
+    DepartmentLeaveQuotaWrite:
+      type: object
+      additionalProperties: false
+      required: [leave_type_id, annual_quota]
+      properties:
+        leave_type_id: {$ref: '#/components/schemas/Ulid'}
+        annual_quota:
+          description: A number upserts. Null deletes the override.
+          oneOf: [{$ref: '#/components/schemas/Days'}, {type: 'null'}]
+    DepartmentLeaveQuotaEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/DepartmentLeaveQuota'}
+        meta: {type: object}
+        links: {type: object}
+
+    LeaveAttachment:
+      type: object
+      required: [id, file_name, content_type, byte_size]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        file_name: {type: string, maxLength: 255}
+        content_type:
+          type: string
+          enum: [image/png, image/jpeg, application/pdf]
+        byte_size: {type: integer, minimum: 1, maximum: 5242880}
+    LeaveAttachmentEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/LeaveAttachment'}
+        meta: {type: object}
+        links: {type: object}
+
+    ApprovalDelegation:
+      type: object
+      required: [id, delegate, start_date, end_date]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        delegate: {$ref: '#/components/schemas/UserSummary'}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+    ApprovalDelegationWrite:
+      type: object
+      additionalProperties: false
+      required: [delegate_id, start_date, end_date]
+      properties:
+        delegate_id: {$ref: '#/components/schemas/Ulid'}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+    ApprovalDelegationEnvelope:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data: {$ref: '#/components/schemas/ApprovalDelegation'}
+        meta: {type: object}
+        links: {type: object}
+
+    TeamCalendarEntry:
+      type: object
+      required: [user_name, leave_type_name, start_date, end_date, days]
+      properties:
+        user_name: {type: string}
+        leave_type_name: {type: string}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        days: {$ref: '#/components/schemas/RequestDays'}
+
+    AuditLog:
+      type: object
+      required: [id, actor, action, subject_type, subject_id, changes, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Ulid'}
+        actor: {$ref: '#/components/schemas/UserSummary'}
+        action:
+          type: string
+          enum: [created, updated, deleted]
+        subject_type:
+          type: string
+          enum: [department, leave_type, holiday, location, leave_quota, encashment, user]
+        subject_id:
+          oneOf: [{$ref: '#/components/schemas/Ulid'}, {type: 'null'}]
+        changes:
+          type: object
+          description: '`before` and `after` of the changed fields. No secrets.'
+          additionalProperties: true
+        created_at: {type: string, format: date-time}
+    AuditLogList:
+      allOf:
+        - $ref: '#/components/schemas/PaginatedEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/AuditLog'}
 
     Branding:
       type: object
@@ -2255,12 +2934,13 @@ components:
         start_date: {type: string, format: date}
         end_date: {type: string, format: date}
         day_part: {$ref: '#/components/schemas/DayPart'}
-        days: {$ref: '#/components/schemas/Days'}
+        days: {$ref: '#/components/schemas/RequestDays'}
         status: {$ref: '#/components/schemas/LeaveStatus'}
         decided_by: {type: [string, 'null']}
         decided_at: {type: [string, 'null'], format: date-time}
     BalanceReportRow:
       type: object
+      description: Same amounts as `Balance`. Not limited to multiples of 0.5 or 0.125.
       required: [employee_code, employee, department, leave_type, year, entitled, used, pending, balance, available]
       properties:
         employee_code: {type: [string, 'null']}
@@ -2403,12 +3083,14 @@ components:
           role: employee
           is_admin: false
           department: {id: 01JB8YZZ9A1B2C3D4E5F6G7H8J, code: IT, name: Information Technology}
+          location: null
           manager: {id: 01JB8Z0K4E3N5P6Q7R8S9T0V1X, name: Bob Mehta}
           employee_code: E-0042
           designation: Software Engineer
           employment_type: full_time
           date_of_joining: '2024-06-03'
           is_active: true
+          avatar_url: null
           last_login_at: '2026-11-19T08:55:00Z'
           created_at: '2024-06-03T09:00:00Z'
         meta: {}
@@ -2432,6 +3114,7 @@ components:
           start_date: '2026-12-21'
           end_date: '2026-12-25'
           day_part: full
+          hours: null
           days: 4
           status: pending
           reason: Year-end family trip
@@ -2457,6 +3140,7 @@ components:
           start_date: '2026-10-07'
           end_date: '2026-10-09'
           day_part: full
+          hours: null
           days: 3
           status: approved
           reason: Sister's wedding
@@ -2535,8 +3219,7 @@ components:
           - {key: api, label: REST API, licensed: true, available: true, enabled: true, locked: false}
           - {key: notifications, label: Email notifications, licensed: true, available: true, enabled: true, locked: false}
           - {key: user_management, label: User management (Keycloak), licensed: true, available: true, enabled: true, locked: false}
-          - {key: multi_level_approval, label: Multi-level approval, licensed: false, available: false, enabled: false, locked: true}
-          - {key: delegation, label: Approval delegation, licensed: false, available: false, enabled: false, locked: true}
+          - {key: multi_level, label: Multi-level approval, licensed: false, available: true, enabled: false, locked: true}
         meta: {}
         links: {}
     IdentityUserCreateDave:

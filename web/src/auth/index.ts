@@ -2,10 +2,14 @@ import { betterAuth } from 'better-auth';
 import { nextCookies } from 'better-auth/next-js';
 import { accessTokenFor, type TokenApi } from './access-token';
 import { authOptions } from './options.mjs';
+import { passwordGrantPlugin } from './password-grant';
 
 function createAuth() {
     const options = authOptions();
-    return betterAuth({ ...options, plugins: [...options.plugins, nextCookies()] });
+    return betterAuth({
+        ...options,
+        plugins: [...options.plugins, passwordGrantPlugin(), nextCookies()],
+    });
 }
 
 let instance: ReturnType<typeof createAuth> | undefined;

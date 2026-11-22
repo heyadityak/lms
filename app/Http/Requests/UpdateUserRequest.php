@@ -34,6 +34,7 @@ final class UpdateUserRequest extends FormRequest
             'employee_code' => ['sometimes', 'nullable', 'string', 'max:50', new PlainText, Rule::unique('users', 'employee_code')->ignore($this->route('user'))],
             'designation' => ['sometimes', 'nullable', 'string', 'max:100', new PlainText],
             'employment_type' => ['sometimes', 'nullable', 'string', 'max:50', new PlainText],
+            'location_id' => ['sometimes', 'nullable', 'string', 'ulid', 'exists:locations,public_id'],
         ];
     }
 

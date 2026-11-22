@@ -21,3 +21,15 @@ Schedule::command('lms:remind-pending-approvals')
     ->dailyAt('08:00')
     ->onOneServer()
     ->withoutOverlapping();
+
+// Monthly types: 1st of the month at 00:20 APP_TIMEZONE. Yearly types are not granted here.
+Schedule::command('lms:accrue-month')
+    ->monthlyOn(1, '00:15')
+    ->onOneServer()
+    ->withoutOverlapping();
+
+// Pending requests older than LEAVE_ESCALATION_DAYS. Mail depends on the notifications module.
+Schedule::command('lms:escalate-stale-approvals')
+    ->dailyAt('09:00')
+    ->onOneServer()
+    ->withoutOverlapping();

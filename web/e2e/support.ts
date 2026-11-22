@@ -15,30 +15,15 @@ const NAMES: Record<string, string> = {
 
 export async function signIn(page: Page, username: string): Promise<void> {
     const expected = NAMES[username] ?? username;
-    // A fresh cookie jar so a Keycloak SSO session cannot skip the login form.
     await page.context().clearCookies();
-
-    for (let attempt = 1; attempt <= 4; attempt++) {
-        await page.goto('/signin');
-        await page.getByRole('button', { name: 'Sign in with SSO' }).click();
-        const usernameField = page.locator('#username');
-        const unavailable = page.getByText('Sign-in is unavailable');
-        await expect(usernameField.or(unavailable)).toBeVisible({ timeout: 20_000 });
-        if (await unavailable.isVisible()) {
-            await page.waitForTimeout(attempt * 2_000);
-            continue;
-        }
-
-        await usernameField.fill(username);
-        await page.locator('#password').fill(PASSWORD);
-        await page.locator('#kc-login').click();
-        await expect(page.getByRole('button', { name: `User menu for ${expected}` })).toBeVisible({
-            timeout: 30_000,
-        });
-        return;
-    }
-
-    throw new Error(`Could not sign in as ${username}`);
+    await page.goto('/signin');
+    await page.getByLabel('Username').fill(username);
+    await page.getByLabel('Password').fill(PASSWORD);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    const rejected = page.getByText('Those credentials were not accepted.');
+    const menu = page.getByRole('button', { name: `User menu for ${expected}` });
+    await expect(menu.or(rejected)).toBeVisible({ timeout: 30_000 });
+    await expect(rejected).toHaveCount(0);
 }
 
 export async function signOut(page: Page): Promise<void> {
@@ -48,7 +33,8 @@ export async function signOut(page: Page): Promise<void> {
         await page.getByRole('menuitem', { name: 'Sign out' }).click();
     }
     await page.goto('/signin');
-    await expect(page.getByRole('button', { name: 'Sign in with SSO' })).toBeVisible();
+    await expect(page.getByLabel('Username')).toBeVisible();
+    await expect(page.getByLabel('Password')).toBeVisible();
 }
 
 /** Serious and critical axe violations, one line per rule, prefixed with the page. */

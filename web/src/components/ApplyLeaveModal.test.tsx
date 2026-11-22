@@ -120,6 +120,7 @@ describe('ApplyLeaveModal', () => {
         await waitFor(() => expect(screen.getByTestId('preview').textContent).toContain('2 days'), {
             timeout: 3000,
         });
+        expect(screen.queryByRole('spinbutton', { name: 'Hours' })).toBeNull();
 
         const preview = calls.find((c) => c.url.includes('/leave-requests/preview'));
         expect(preview?.method).toBe('POST');
@@ -149,5 +150,31 @@ describe('ApplyLeaveModal', () => {
             day_part: 'full',
             reason: 'Family trip',
         });
+        expect(submit?.body).not.toHaveProperty('hours');
+    });
+
+    it('shows hours on a single day and hides them for a half day', async () => {
+        renderModal();
+        expect(await screen.findByRole('radio', { name: 'Casual' })).toBeTruthy();
+        expect(screen.queryByRole('spinbutton', { name: 'Hours' })).toBeNull();
+
+        const day = dayjs().date(10).format('YYYY-MM-DD');
+        const from = await screen.findByPlaceholderText('From');
+        fireEvent.mouseDown(from);
+        fireEvent.click(from);
+        (from as HTMLInputElement).focus();
+        fireEvent.click(await screen.findByTitle(day));
+        fireEvent.click(screen.getByTitle(day));
+
+        expect(await screen.findByRole('spinbutton', { name: 'Hours' })).toBeTruthy();
+
+        const half = screen.getByRole('checkbox', { name: 'Half day' });
+        fireEvent.click(half);
+        fireEvent.change(half, { target: { checked: true } });
+        await waitFor(() => expect(screen.queryByRole('spinbutton', { name: 'Hours' })).toBeNull());
+
+        fireEvent.click(half);
+        fireEvent.change(half, { target: { checked: false } });
+        expect(await screen.findByRole('spinbutton', { name: 'Hours' })).toBeTruthy();
     });
 });

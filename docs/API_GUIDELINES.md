@@ -19,7 +19,7 @@ Who uses this file:
 | State transitions | Sub-resource actions with `POST`: `/leave-requests/{id}/approve`, `/reject`, `/cancel`; `/users/{id}/deactivate`, `/activate`. Never `PATCH status`. |
 | Methods | `GET` read, `POST` create/action, `PATCH` partial update (JSON merge semantics: omitted = unchanged, `null` = clear), `PUT` only for whole-file uploads, `DELETE` remove/reset. |
 | Media type | Request and response `application/json` (UTF-8). Errors `application/problem+json`. Reports also `text/csv` (§6). Uploads `multipart/form-data`. |
-| Fields | `snake_case`. Booleans `is_*`/`has_*` or plain adjectives (`enabled`). Day amounts are JSON numbers, multiples of `0.5`. |
+| Fields | `snake_case`. Booleans `is_*`/`has_*` or plain adjectives (`enabled`). Quotas and adjustments are multiples of `0.5` (`Days`). Leave-request `days`, including `LeaveRequestReportRow.days` and the team calendar, are multiples of `0.125` (`RequestDays`: a full day, a half day, or `hours/8`). Preview `available_before` and `available_after` are `BalanceAmount` (non-negative, zero allowed): eighths after an hourly debit, up to 3 decimal places after a monthly grant or encashment. Ledger `days` and balance figures (`entitled`, `used`, `pending`, `balance`, `available` on `Balance` and `BalanceReportRow`) use that same quanta and are not `Days` or `RequestDays`. |
 | Dates | ISO-8601. Calendar dates `YYYY-MM-DD` (`start_date`). Instants RFC 3339 with offset, UTC (`2026-11-19T10:15:00Z`). |
 | IDs | Every exposed id is the row's **ULID** (`public_id` column, 26 chars, Crockford base32). The bigint primary key is never exposed. Foreign keys in payloads are ULIDs too (`leave_type_id`). |
 | Nulls | Optional fields are present with `null`, not omitted, in responses. |
@@ -99,6 +99,7 @@ Every 4xx/5xx from `/api/v1` is `application/problem+json`:
 | 409 | `INVALID_TRANSITION` | State conflict, e.g. approving a request that is no longer pending. |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | Same `Idempotency-Key` still being processed. |
 | 409 | `DEPARTMENT_NOT_EMPTY` | Deleting a department that still has users. |
+| 409 | `LOCATION_NOT_EMPTY` | Deleting a location that still has users or holidays. |
 | 409 | `LAST_ADMIN` | Revoking `admin` from, or disabling, the last active admin (G3, D-29). |
 | 409 | `IDP_CONFLICT` | Keycloak returned 409 (duplicate username/email). |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Wrong `Content-Type`. |

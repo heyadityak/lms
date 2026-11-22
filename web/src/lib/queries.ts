@@ -38,6 +38,13 @@ export const useDepartments = () =>
         staleTime: 60_000,
     });
 
+export const useLocations = () =>
+    useQuery({
+        queryKey: ['locations'],
+        queryFn: async () => (await unwrap(api.GET('/locations'))).data,
+        staleTime: 60_000,
+    });
+
 /** Active and inactive types (hr_admin). `useLeaveTypes` stays the active list. */
 export const useAllLeaveTypes = () =>
     useQuery({

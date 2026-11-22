@@ -34,9 +34,11 @@ class LeaveRequest extends Model
             'end_date' => 'date',
             'day_part' => DayPart::class,
             'days' => 'float',
+            'hours' => 'integer',
             'status' => LeaveStatus::class,
             'decided_at' => 'datetime',
             'cancelled_at' => 'datetime',
+            'escalated_at' => 'datetime',
         ];
     }
 
@@ -68,6 +70,12 @@ class LeaveRequest extends Model
     public function ledgerEntries(): HasMany
     {
         return $this->hasMany(LeaveLedgerEntry::class);
+    }
+
+    /** @return HasMany<LeaveAttachment, $this> */
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(LeaveAttachment::class);
     }
 
     /** Derived, never stored (D-07): approved and already started. */

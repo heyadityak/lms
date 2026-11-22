@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Actions\Audit\RecordAuditLog;
 use App\Enums\Role;
 use App\Http\Requests\LeaveTypeRequest;
 use App\Http\Resources\LeaveTypeResource;
@@ -31,16 +32,18 @@ final class LeaveTypeController
         return (new LeaveTypeResource($leaveType))->envelope();
     }
 
-    public function store(LeaveTypeRequest $request): JsonResponse
+    public function store(LeaveTypeRequest $request, RecordAuditLog $audit): JsonResponse
     {
         $type = LeaveType::query()->create($request->validated());
+        $audit->write($request->user(), 'leave_type', $type->public_id, 'created', $request->validated());
 
         return (new LeaveTypeResource($type->refresh()))->envelope(201, route('api.v1.leave-types.show', $type));
     }
 
-    public function update(LeaveTypeRequest $request, LeaveType $leaveType): JsonResponse
+    public function update(LeaveTypeRequest $request, LeaveType $leaveType, RecordAuditLog $audit): JsonResponse
     {
         $leaveType->update($request->validated());
+        $audit->write($request->user(), 'leave_type', $leaveType->public_id, 'updated', $request->validated());
 
         return (new LeaveTypeResource($leaveType))->envelope();
     }

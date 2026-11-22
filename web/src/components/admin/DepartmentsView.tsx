@@ -1,13 +1,39 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { App, Button, Empty, Form, Input, Modal, Popconfirm, Space, Table } from 'antd';
+import {
+    App,
+    Button,
+    Drawer,
+    Empty,
+    Form,
+    Input,
+    InputNumber,
+    Popconfirm,
+    Space,
+    Spin,
+    Table,
+    Typography,
+} from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useState } from 'react';
-import { browserApi as api, unwrap, unwrapEmpty, type Schemas } from '@/lib/api/client';
+import {
+    ApiError,
+    browserApi as api,
+    unwrap,
+    unwrapEmpty,
+    type Problem,
+    type Schemas,
+} from '@/lib/api/client';
 import { applyFieldErrors, unmappedError } from '@/lib/fields';
-import { useDepartments } from '@/lib/queries';
+import { useAllLeaveTypes, useDepartments } from '@/lib/queries';
 import { PageTitle, ProblemAlert } from '../ui';
+
+type Quota = Schemas['DepartmentLeaveQuota'];
+
+type DeptValues = Schemas['DepartmentWrite'] & {
+    quotas?: Record<string, number | null | undefined>;
+};
 
 type Department = Schemas['Department'];
 
@@ -102,6 +128,28 @@ export function DepartmentsView() {
     );
 }
 
+function quotaMap(rows: Quota[] | undefined): Record<string, number | null> {
+    const values: Record<string, number | null> = {};
+    for (const row of rows ?? []) values[row.leave_type_id] = row.annual_quota;
+    return values;
+}
+
+async function putQuota(departmentId: string, body: Schemas['DepartmentLeaveQuotaWrite']) {
+    const { error, response } = await api.PUT('/departments/{departmentId}/leave-quotas', {
+        params: { path: { departmentId } },
+        body,
+    });
+    if (!response.ok) throw new ApiError(response.status, (error ?? {}) as Problem);
+}
+
+function daysError(value: number | null | undefined): string | null {
+    if (value == null) return null;
+    if (value < 0 || Math.abs(value * 2 - Math.round(value * 2)) > 1e-9) {
+        return 'Quota must be zero or a multiple of 0.5';
+    }
+    return null;
+}
+
 function DepartmentEditor({
     target,
     onClose,
@@ -111,12 +159,15 @@ function DepartmentEditor({
     onClose: () => void;
     onSaved: (name: string) => Promise<void>;
 }) {
-    const [form] = Form.useForm<Schemas['DepartmentWrite']>();
+    const [form] = Form.useForm<DeptValues>();
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<unknown>(null);
     const editing = target === 'new' ? null : target;
+    const types = useAllLeaveTypes();
+    const loading = editing !== null && types.isPending;
+    const canSaveQuotas = editing !== null && types.isSuccess;
 
-    const onFinish = async (values: Schemas['DepartmentWrite']) => {
+    const onFinish = async (values: DeptValues) => {
         const body: Schemas['DepartmentWrite'] = {
             code: values.code.trim(),
             name: values.name.trim(),
@@ -131,6 +182,23 @@ function DepartmentEditor({
                         body,
                     }),
                 );
+                if (canSaveQuotas) {
+                    const previous = new Map(
+                        (editing.leave_quotas ?? []).map((row) => [
+                            row.leave_type_id,
+                            row.annual_quota,
+                        ]),
+                    );
+                    for (const type of types.data ?? []) {
+                        const next = values.quotas?.[type.id] ?? null;
+                        const prev = previous.get(type.id) ?? null;
+                        if (next === prev) continue;
+                        await putQuota(editing.id, {
+                            leave_type_id: type.id,
+                            annual_quota: next,
+                        });
+                    }
+                }
             } else {
                 await unwrap(api.POST('/departments', { body }));
             }
@@ -143,39 +211,77 @@ function DepartmentEditor({
     };
 
     return (
-        <Modal
+        <Drawer
             open
+            size={520}
             title={editing ? `Edit ${editing.name}` : 'Add department'}
-            okText="Save"
-            confirmLoading={saving}
-            onOk={() => form.submit()}
-            onCancel={onClose}
+            onClose={onClose}
+            extra={
+                <Button type="primary" loading={saving} onClick={() => form.submit()}>
+                    Save
+                </Button>
+            }
             destroyOnHidden
         >
             {error ? <ProblemAlert error={error} /> : null}
-            <Form<Schemas['DepartmentWrite']>
-                form={form}
-                layout="vertical"
-                initialValues={
-                    editing ? { code: editing.code, name: editing.name } : { code: '', name: '' }
-                }
-                onFinish={onFinish}
-            >
-                <Form.Item
-                    name="code"
-                    label="Code"
-                    rules={[{ required: true, whitespace: true, message: 'Code is required' }]}
+            {loading ? (
+                <Spin />
+            ) : (
+                <Form<DeptValues>
+                    form={form}
+                    layout="vertical"
+                    initialValues={{
+                        code: editing?.code ?? '',
+                        name: editing?.name ?? '',
+                        quotas: quotaMap(editing?.leave_quotas),
+                    }}
+                    onFinish={onFinish}
                 >
-                    <Input maxLength={20} />
-                </Form.Item>
-                <Form.Item
-                    name="name"
-                    label="Name"
-                    rules={[{ required: true, whitespace: true, message: 'Name is required' }]}
-                >
-                    <Input maxLength={100} />
-                </Form.Item>
-            </Form>
-        </Modal>
+                    <Form.Item
+                        name="code"
+                        label="Code"
+                        rules={[{ required: true, whitespace: true, message: 'Code is required' }]}
+                    >
+                        <Input maxLength={20} />
+                    </Form.Item>
+                    <Form.Item
+                        name="name"
+                        label="Name"
+                        rules={[{ required: true, whitespace: true, message: 'Name is required' }]}
+                    >
+                        <Input maxLength={100} />
+                    </Form.Item>
+                    {canSaveQuotas && (
+                        <>
+                            <Typography.Title level={2} style={{ fontSize: 16 }}>
+                                Quota overrides
+                            </Typography.Title>
+                            <Typography.Paragraph type="secondary">
+                                Empty uses the leave type&apos;s annual quota.
+                            </Typography.Paragraph>
+                            {(types.data ?? []).map((type) => (
+                                <Form.Item
+                                    key={type.id}
+                                    name={['quotas', type.id]}
+                                    label={`${type.name} (${type.code})`}
+                                    extra={`Type quota ${type.annual_quota}`}
+                                    rules={[
+                                        {
+                                            validator: async (_, value: number | null) => {
+                                                const invalid = daysError(value);
+                                                if (invalid) throw new Error(invalid);
+                                            },
+                                        },
+                                    ]}
+                                >
+                                    <InputNumber min={0} step={0.5} style={{ width: '100%' }} />
+                                </Form.Item>
+                            ))}
+                        </>
+                    )}
+                    {editing && types.isError ? <ProblemAlert error={types.error} /> : null}
+                </Form>
+            )}
+        </Drawer>
     );
 }

@@ -17,6 +17,15 @@ final class DepartmentResource extends JsonResource
     /** @return array<string, mixed> */
     public function toArray(Request $request): array
     {
-        return ['id' => $this->public_id, 'code' => $this->code, 'name' => $this->name, 'users_count' => (int) $this->users_count];
+        return [
+            'id' => $this->public_id,
+            'code' => $this->code,
+            'name' => $this->name,
+            'users_count' => (int) $this->users_count,
+            'leave_quotas' => $this->leaveQuotas->map(fn ($quota): array => [
+                'leave_type_id' => $quota->leaveType->public_id,
+                'annual_quota' => $quota->annual_quota,
+            ])->values()->all(),
+        ];
     }
 }

@@ -188,7 +188,7 @@ sequenceDiagram
 
     B->>A: POST /leave-requests/ID/approve (comment)
     A->>P: decide(bob, request)
-    P-->>A: allowed (direct manager, not own)
+    P-->>A: allowed (resolved approver, not own)
     A->>AC: handle(request, bob, comment)
     AC->>DB: BEGIN, SELECT leave_requests FOR UPDATE
     alt status is not pending

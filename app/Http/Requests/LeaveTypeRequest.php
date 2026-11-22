@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Enums\AccrualFrequency;
 use App\Http\Requests\Concerns\RejectsUnknownFields;
 use App\Models\LeaveType;
 use App\Rules\PlainText;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 /** openapi `LeaveTypeCreate` (POST) / `LeaveTypeUpdate` (PATCH: no code, code is immutable; is_active toggles). */
 final class LeaveTypeRequest extends FormRequest
@@ -33,6 +35,8 @@ final class LeaveTypeRequest extends FormRequest
             'max_balance' => ['sometimes', 'nullable', ...$days],
             'allow_half_day' => ['sometimes', 'boolean'],
             'max_backdate_days' => ['sometimes', 'integer', 'between:0,3650'],
+            'sandwich' => ['sometimes', 'boolean'],
+            'accrual_frequency' => ['sometimes', Rule::enum(AccrualFrequency::class)],
         ], $create ? [] : ['is_active' => ['sometimes', 'boolean']]);
     }
 }

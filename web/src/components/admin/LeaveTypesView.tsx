@@ -8,6 +8,7 @@ import {
     Input,
     InputNumber,
     Modal,
+    Radio,
     Space,
     Switch,
     Table,
@@ -31,6 +32,8 @@ interface Values {
     max_balance?: number | null;
     allow_half_day: boolean;
     max_backdate_days: number | null;
+    sandwich: boolean;
+    accrual_frequency: Schemas['AccrualFrequency'];
     is_active?: boolean;
 }
 
@@ -77,6 +80,16 @@ export function LeaveTypesView() {
             key: 'allow_half_day',
             render: (_, row) => (row.allow_half_day ? 'Yes' : 'No'),
         },
+        {
+            title: 'Sandwich',
+            key: 'sandwich',
+            render: (_, row) => (row.sandwich ? 'On' : 'Off'),
+        },
+        {
+            title: 'Accrual',
+            key: 'accrual_frequency',
+            render: (_, row) => (row.accrual_frequency === 'monthly' ? 'Monthly' : 'Yearly'),
+        },
         { title: 'Backdate days', dataIndex: 'max_backdate_days', key: 'max_backdate_days' },
         {
             title: 'Status',
@@ -110,7 +123,7 @@ export function LeaveTypesView() {
                 dataSource={list.data}
                 loading={list.isFetching}
                 pagination={false}
-                scroll={{ x: 960 }}
+                scroll={{ x: 1100 }}
             />
             {editor && (
                 <LeaveTypeEditor
@@ -136,6 +149,8 @@ function shared(values: Values) {
         max_balance: values.max_balance ?? null,
         allow_half_day: values.allow_half_day,
         max_backdate_days: values.max_backdate_days ?? 0,
+        sandwich: values.sandwich,
+        accrual_frequency: values.accrual_frequency,
     };
 }
 
@@ -208,6 +223,8 @@ function LeaveTypeEditor({
                               max_balance: editing.max_balance,
                               allow_half_day: editing.allow_half_day,
                               max_backdate_days: editing.max_backdate_days,
+                              sandwich: editing.sandwich,
+                              accrual_frequency: editing.accrual_frequency ?? 'yearly',
                               is_active: editing.is_active,
                           }
                         : {
@@ -215,6 +232,8 @@ function LeaveTypeEditor({
                               allow_half_day: true,
                               max_backdate_days: 0,
                               annual_quota: null,
+                              sandwich: false,
+                              accrual_frequency: 'yearly',
                           }
                 }
             >
@@ -301,6 +320,26 @@ function LeaveTypeEditor({
                 </Form.Item>
                 <Form.Item name="allow_half_day" label="Half day allowed" valuePropName="checked">
                     <Switch checkedChildren="Yes" unCheckedChildren="No" />
+                </Form.Item>
+                <Form.Item
+                    name="sandwich"
+                    label="Sandwich rule"
+                    valuePropName="checked"
+                    extra="Count weekends and holidays that fall between the leave days."
+                >
+                    <Switch checkedChildren="On" unCheckedChildren="Off" />
+                </Form.Item>
+                <Form.Item
+                    name="accrual_frequency"
+                    label="Accrual frequency"
+                    rules={[{ required: true, message: 'Choose yearly or monthly' }]}
+                >
+                    <Radio.Group
+                        options={[
+                            { value: 'yearly', label: 'Yearly' },
+                            { value: 'monthly', label: 'Monthly' },
+                        ]}
+                    />
                 </Form.Item>
                 <Form.Item
                     name="max_backdate_days"

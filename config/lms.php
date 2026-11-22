@@ -10,4 +10,8 @@ return [
     'leave_year_start_month' => (int) env('LEAVE_YEAR_START_MONTH', 1),
     // Seed default for SL max_backdate_days (D-31).
     'sl_max_backdate_days' => (int) env('LMS_SL_MAX_BACKDATE_DAYS', 7),
+    // Requests of at least this many days go to HR when module multi_level is on.
+    'hr_approval_days' => (float) env('LEAVE_HR_APPROVAL_DAYS', 5),
+    // Pending requests older than this many days are escalated to HR.
+    'escalation_days' => (int) env('LEAVE_ESCALATION_DAYS', 3),
 ];

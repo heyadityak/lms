@@ -20,12 +20,13 @@ class LeaveLedgerEntry extends Model
 
     public const UPDATED_AT = null;
 
-    protected $fillable = ['user_id', 'leave_type_id', 'year', 'kind', 'days', 'leave_request_id', 'actor_id', 'note'];
+    protected $fillable = ['user_id', 'leave_type_id', 'year', 'accrual_month', 'kind', 'days', 'leave_request_id', 'actor_id', 'note'];
 
     protected function casts(): array
     {
         return [
             'year' => 'integer',
+            'accrual_month' => 'integer',
             'kind' => LedgerKind::class,
             'days' => 'float',
         ];

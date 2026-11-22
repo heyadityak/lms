@@ -75,7 +75,7 @@
       "clientAuthenticatorType": "client-secret",
       "secret": "lms-web-dev-secret",
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": false,
+      "directAccessGrantsEnabled": true,
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [

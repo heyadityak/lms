@@ -58,6 +58,12 @@ final class UserPolicy
         return $actor->role === Role::HrAdmin;
     }
 
+    /** Leave encashment. hr_admin only. */
+    public function encash(User $actor): bool
+    {
+        return $actor->role === Role::HrAdmin;
+    }
+
     /** UC-U1–U6. The additive realm role `admin` only (D-29). Guardrails G2–G3 stay in UserAdminGuard. */
     public function manageIdentity(User $actor): bool
     {

@@ -13,10 +13,14 @@ use App\Http\Resources\LeaveRequestResource;
 use App\Models\LeaveRequest;
 use App\Services\LeaveRequestQuery;
 use App\Services\LeaveRequestValidator;
+use App\Support\Brand;
+use App\Support\Settings;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use stdClass;
+use Symfony\Component\HttpFoundation\Response;
 
 final class LeaveRequestController
 {
@@ -53,6 +57,21 @@ final class LeaveRequestController
         $request->validate(['include' => ['sometimes', 'string', 'regex:/^(actions|user|leave_type)(,(actions|user|leave_type))*$/']]);
 
         return self::resource($leaveRequest, in_array('actions', explode(',', (string) $request->query('include')), true))->envelope();
+    }
+
+    public function pdf(LeaveRequest $leaveRequest): Response
+    {
+        Gate::authorize('readDocument', $leaveRequest);
+        $leaveRequest->load(['user', 'leaveType']);
+        $binary = Pdf::loadView('pdf.leave-request', [
+            'brandName' => Brand::fromSettings(app(Settings::class))->name,
+            'leaveRequest' => $leaveRequest,
+        ])->output();
+
+        return response($binary, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="leave-request-'.$leaveRequest->public_id.'.pdf"',
+        ]);
     }
 
     public function cancel(CancelLeaveRequestRequest $request, LeaveRequest $leaveRequest, CancelLeaveRequest $cancel): JsonResponse

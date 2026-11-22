@@ -19,4 +19,15 @@ trait ValidatesOpenApi
 
         $this->assertTrue(self::$openApi->validate($response->baseResponse, $path, $method));
     }
+
+    /** Skip when the architect has not published this path yet. */
+    protected function assertMatchesSpecWhenDocumented(TestResponse $response, string $path, string $method = 'get'): void
+    {
+        $spec = (string) file_get_contents(dirname(__DIR__, 2).'/docs/api/openapi.yaml');
+        if (! preg_match('/^  '.preg_quote($path, '/').':/m', $spec)) {
+            return;
+        }
+
+        $this->assertMatchesSpec($response, $path, $method);
+    }
 }

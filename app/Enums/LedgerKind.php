@@ -13,6 +13,7 @@ enum LedgerKind: string
     case Debit = 'debit';
     case Reversal = 'reversal';
     case Adjustment = 'adjustment';
+    case Encashment = 'encashment';
 
     public function isYearly(): bool
     {

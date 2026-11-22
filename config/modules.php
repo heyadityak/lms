@@ -10,8 +10,7 @@ return [
         'reports' => ['label' => 'Reports & exports', 'available' => true],
         'api' => ['label' => 'REST API', 'available' => true],
         'notifications' => ['label' => 'Email notifications', 'available' => true],
-        'multi_level_approval' => ['label' => 'Multi-level approval', 'available' => false], // Later
-        'delegation' => ['label' => 'Approval delegation', 'available' => false], // Later
+        'multi_level' => ['label' => 'Multi-level approval', 'available' => true],
         'user_management' => ['label' => 'User management (Keycloak)', 'available' => true], // D-22
     ],
 ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\AccrualFrequency;
 use App\Models\Concerns\HasPublicId;
 use Database\Factories\LeaveTypeFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,7 +18,7 @@ class LeaveType extends Model
 
     protected $fillable = [
         'code', 'name', 'annual_quota', 'tracks_balance', 'carry_forward_cap', 'max_balance',
-        'allow_half_day', 'max_backdate_days', 'is_active',
+        'allow_half_day', 'max_backdate_days', 'is_active', 'sandwich', 'accrual_frequency',
     ];
 
     protected $attributes = [
@@ -26,6 +27,8 @@ class LeaveType extends Model
         'allow_half_day' => true,
         'max_backdate_days' => 0,
         'is_active' => true,
+        'sandwich' => false,
+        'accrual_frequency' => 'yearly',
     ];
 
     protected function casts(): array
@@ -38,6 +41,8 @@ class LeaveType extends Model
             'allow_half_day' => 'boolean',
             'max_backdate_days' => 'integer',
             'is_active' => 'boolean',
+            'sandwich' => 'boolean',
+            'accrual_frequency' => AccrualFrequency::class,
         ];
     }
 

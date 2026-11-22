@@ -24,6 +24,7 @@ Read this first, then `decisions.md`, then the docs it points to.
 - 2026-11-22 (phase 16): Admin screens at `/admin/settings/branding`, `/admin/settings/modules`, `/admin/identity-users`. Vitest 51. `revalidateTag('branding')` after branding writes. Open: Figma license; `GET /leave-types` 422 is not in the spec.
 - 2026-11-22 (phase 17): Done. PHPUnit 211 passed. Playwright 4 passed (`npm run e2e`): axe clean, branding, Alice applies and Bob approves, holidays module off then restored. Smoke runs `npx playwright test --config=e2e/playwright.config.ts` with `PLAYWRIGHT_BASE_URL`. Open: Figma license; `GET /leave-types` 422 is not in the spec; identity list/detail are not audited.
 - 2026-11-22 (phase 18): UC-S4 daily reminder. `lms:remind-pending-approvals` at 08:00 `APP_TIMEZONE`. One mail per manager or hr_admin with a pending inbox item. `approval_reminders` unique `(user_id, reminded_on)` stops a second send the same day. Notifications module off sends nothing. PHPUnit 214. Not committed.
+- 2026-11-22 (phase 19): Confidential client `lms-web` has Direct Access Grants on (D-52) so the BFF can call the token endpoint. Public clients unchanged. Running dev realm updated in place (`kcadm`); user count stayed 4. Password grant as alice succeeded. Not committed. Frontend still redirects to Keycloak until the welcome page is built.
 
 ## Run logs
 | Date | Agent | File | Summary |
@@ -57,6 +58,11 @@ Read this first, then `decisions.md`, then the docs it points to.
 | 2026-11-22 | platform | [2026-11-22-phase17-platform.md](2026-11-22-phase17-platform.md) | Package smoke runs Playwright against localhost:8080. |
 | 2026-11-22 | domain | [2026-11-22-phase18-domain.md](2026-11-22-phase18-domain.md) | UC-S4 pending-approval reminder at 08:00. PHPUnit 214. |
 | 2026-11-22 | architect | [2026-11-22-phase18-architect.md](2026-11-22-phase18-architect.md) | UC-S4 is MVP. 08:00 reminder, no new API or ADR. |
+| 2026-11-22 | platform | [2026-11-22-phase19-platform-login.md](2026-11-22-phase19-platform-login.md) | `lms-web` direct access grants on (D-52). Live realm updated; users kept. |
+| 2026-11-22 | architect | [2026-11-22-phase19-architect.md](2026-11-22-phase19-architect.md) | Phase 19 contract. D-53–D-56 and D-58. OpenAPI paths for files, calendar, delegation, quotas, locations, audit. |
+| 2026-11-22 | frontend | [2026-11-22-phase19-frontend.md](2026-11-22-phase19-frontend.md) | Team calendar, delegation, locations, audit log. Vitest 61. Browser not checked. |
+| 2026-11-22 | domain | [2026-11-22-phase19-domain.md](2026-11-22-phase19-domain.md) | UC-E10–E14, UC-M5–M7, UC-H10–H15. PHPUnit 230. Preview and report day schemas still multipleOf 0.5. |
+| 2026-11-22 | architect | [2026-11-22-custom-login-architect.md](2026-11-22-custom-login-architect.md) | D-52: welcome page posts credentials to the BFF. No Keycloak login redirect. |
 
 ## Open questions (awaiting user)
 1. ~~Leave year~~ Resolved by D-26 (`LEAVE_YEAR_START_MONTH`, default 1). Confirm env-only (not admin-editable) is acceptable.

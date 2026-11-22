@@ -2,13 +2,25 @@
 
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
-import { App, Button, DatePicker, Empty, Form, Input, Modal, Popconfirm, Space, Table } from 'antd';
+import {
+    App,
+    Button,
+    DatePicker,
+    Empty,
+    Form,
+    Input,
+    Modal,
+    Popconfirm,
+    Select,
+    Space,
+    Table,
+} from 'antd';
 import type { TableColumnsType } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useState } from 'react';
 import { browserApi as api, unwrap, unwrapEmpty, type Schemas } from '@/lib/api/client';
 import { applyFieldErrors, unmappedError } from '@/lib/fields';
-import { useHolidays } from '@/lib/queries';
+import { useHolidays, useLocations } from '@/lib/queries';
 import { PageTitle, ProblemAlert, fmtDate } from '../ui';
 
 type Holiday = Schemas['Holiday'];
@@ -20,6 +32,7 @@ const clampYear = (year: number) => Math.min(MAX_YEAR, Math.max(MIN_YEAR, year))
 interface Values {
     date: Dayjs | null;
     name: string;
+    location_id?: string | null;
 }
 
 /** Holiday calendar admin (UC-H4). The page 404s when the holidays module is off. */
@@ -47,6 +60,11 @@ export function HolidaysAdminView() {
     const columns: TableColumnsType<Holiday> = [
         { title: 'Date', key: 'date', dataIndex: 'date', render: fmtDate },
         { title: 'Name', key: 'name', dataIndex: 'name' },
+        {
+            title: 'Location',
+            key: 'location',
+            render: (_, row) => row.location?.name ?? 'All locations',
+        },
         {
             title: 'Action',
             key: 'action',
@@ -145,12 +163,14 @@ function HolidayEditor({
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<unknown>(null);
     const editing = target === 'new' ? null : target;
+    const locations = useLocations();
 
     const onFinish = async (values: Values) => {
         if (!values.date) return;
         const body: Schemas['HolidayWrite'] = {
             date: values.date.format('YYYY-MM-DD'),
             name: values.name.trim(),
+            location_id: values.location_id ?? null,
         };
         setSaving(true);
         setError(null);
@@ -190,8 +210,12 @@ function HolidayEditor({
                 onFinish={onFinish}
                 initialValues={
                     editing
-                        ? { date: dayjs(editing.date), name: editing.name }
-                        : { date: dayjs(`${year}-01-01`), name: '' }
+                        ? {
+                              date: dayjs(editing.date),
+                              name: editing.name,
+                              location_id: editing.location?.id ?? null,
+                          }
+                        : { date: dayjs(`${year}-01-01`), name: '', location_id: null }
                 }
             >
                 <Form.Item
@@ -208,6 +232,21 @@ function HolidayEditor({
                     rules={[{ required: true, whitespace: true, message: 'Name is required' }]}
                 >
                     <Input maxLength={100} />
+                </Form.Item>
+                <Form.Item
+                    name="location_id"
+                    label="Location"
+                    extra="Optional. Empty applies the holiday to every location."
+                >
+                    <Select
+                        allowClear
+                        placeholder="All locations"
+                        loading={locations.isFetching}
+                        options={(locations.data ?? []).map((location) => ({
+                            value: location.id,
+                            label: location.name,
+                        }))}
+                    />
                 </Form.Item>
             </Form>
         </Modal>

@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Enums\LeaveStatus;
+use App\Enums\Module;
 use App\Enums\Role;
+use App\Models\ApprovalDelegation;
 use App\Models\LeaveRequest;
 use App\Models\User;
 use App\Support\LeaveYear;
+use App\Support\Modules;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -32,9 +35,31 @@ final class LeaveRequestQuery
     {
         $query = LeaveRequest::query()->where('status', LeaveStatus::Pending)->where('user_id', '<>', $user->id);
 
-        return $user->role === Role::HrAdmin
-            ? $query
-            : $query->whereIn('user_id', User::query()->select('id')->where('manager_id', $user->id));
+        if ($user->role === Role::HrAdmin) {
+            return $query;
+        }
+
+        $today = now()->toDateString();
+        $delegatorIds = ApprovalDelegation::query()
+            ->where('delegate_id', $user->id)
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->pluck('delegator_id');
+        $delegatedAway = ApprovalDelegation::query()
+            ->where('delegator_id', $user->id)
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->exists();
+        if (! $delegatedAway) {
+            $delegatorIds->push($user->id);
+        }
+
+        $query->whereIn('user_id', User::query()->select('id')->whereIn('manager_id', $delegatorIds->unique()->all()));
+        if (app(Modules::class)->enabled(Module::MultiLevel)) {
+            $query->where('days', '<', (float) config('lms.hr_approval_days'));
+        }
+
+        return $query;
     }
 
     /**

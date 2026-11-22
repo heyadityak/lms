@@ -57,7 +57,7 @@ final class LeaveBalanceService
             ->groupBy('leave_type_id')
             ->pluck('total', 'leave_type_id');
 
-        $usedKinds = [LedgerKind::Debit, LedgerKind::Reversal];
+        $usedKinds = [LedgerKind::Debit, LedgerKind::Reversal, LedgerKind::Encashment];
 
         return LeaveType::query()->where(['tracks_balance' => true, 'is_active' => true])->orderBy('code')->get()
             ->map(function (LeaveType $type) use ($ledger, $pending, $usedKinds, $year): array {

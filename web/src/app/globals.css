@@ -86,3 +86,100 @@
     .ant-picker-calendar-date-value {
     color: #44477b !important;
 }
+
+/* Welcome / sign-in. Brand panel colours are inline (customer primary + contrast). */
+.lms-signin {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+    background: var(--ant-color-bg-layout, #f2f4f8);
+}
+
+.lms-welcome {
+    width: min(960px, 100%);
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+    background: #ffffff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow:
+        0 4px 15px rgba(35, 64, 136, 0.05),
+        0 3px 35px -4px rgba(52, 76, 106, 0.1);
+}
+
+.lms-welcome-brand,
+.lms-welcome-panel {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+    padding: 48px 40px;
+}
+
+.lms-welcome-brand {
+    gap: 12px;
+    min-height: 420px;
+}
+
+.lms-welcome-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 72px;
+    height: 72px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.lms-welcome-logo img {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+}
+
+.lms-welcome-kicker {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.lms-welcome-brand h1 {
+    margin: 0;
+    color: inherit;
+    font-size: 36px;
+    line-height: 1.2;
+    font-weight: 700;
+}
+
+.lms-welcome-lead {
+    margin: 0;
+    max-width: 36ch;
+    font-size: 18px;
+    line-height: 1.5;
+}
+
+.lms-welcome :focus-visible {
+    outline: 3px solid #14162b;
+    outline-offset: 3px;
+}
+
+@media (max-width: 767px) {
+    .lms-welcome {
+        grid-template-columns: 1fr;
+    }
+
+    .lms-welcome-brand,
+    .lms-welcome-panel {
+        padding: 32px 24px;
+        min-height: 0;
+    }
+
+    .lms-welcome-brand h1 {
+        font-size: 28px;
+    }
+}

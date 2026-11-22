@@ -1,7 +1,21 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Checkbox, Form, Input, Modal, Radio, Space, Spin } from 'antd';
+import {
+    Alert,
+    App,
+    Button,
+    Checkbox,
+    Form,
+    Input,
+    InputNumber,
+    Modal,
+    Radio,
+    Space,
+    Spin,
+    Upload,
+} from 'antd';
+import type { UploadProps } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
@@ -17,6 +31,7 @@ interface Values {
     dates?: [Dayjs | null, Dayjs | null] | null;
     half_day?: boolean;
     day_part?: 'first_half' | 'second_half';
+    hours?: number | null;
     reason?: string;
     handover_note?: string;
 }
@@ -27,9 +42,40 @@ const FIELD: Record<string, keyof Values> = {
     start_date: 'dates',
     end_date: 'dates',
     day_part: 'half_day',
+    hours: 'hours',
     reason: 'reason',
     handover_note: 'handover_note',
 };
+
+const ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/** One PNG, JPEG or PDF, posted after the leave request exists. */
+export function attachmentError(file: { type: string; name: string; size: number }): string | null {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    const typeOk =
+        file.type === 'image/png' ||
+        file.type === 'image/jpeg' ||
+        file.type === 'application/pdf' ||
+        ext === 'png' ||
+        ext === 'jpg' ||
+        ext === 'jpeg' ||
+        ext === 'pdf';
+    if (!typeOk) return 'Upload a PNG, JPEG or PDF';
+    if (file.size > ATTACHMENT_BYTES) return 'File must be 5 MB or smaller';
+    return null;
+}
+
+function singleDay(dates: Values['dates']): boolean {
+    const [from, to] = dates ?? [];
+    return !!from && !!to && from.isSame(to, 'day');
+}
+
+function hoursValue(v: Values): number | undefined {
+    if (v.half_day || !singleDay(v.dates) || v.hours == null) return undefined;
+    const hours = v.hours;
+    if (!Number.isInteger(hours) || hours < 1 || hours > 8) return undefined;
+    return hours;
+}
 
 const PREVIEW_REASON = 'Preview'; // reason does not affect the preview; V9 needs ≥ 3 chars.
 
@@ -37,6 +83,7 @@ function toBody(v: Values, forPreview = false): Body | null {
     const [from, to] = v.dates ?? [];
     if (!v.leave_type_id || !from || !to) return null;
     const reason = v.reason?.trim() ?? '';
+    const hours = hoursValue(v);
     return {
         leave_type_id: v.leave_type_id,
         start_date: from.format('YYYY-MM-DD'),
@@ -46,6 +93,7 @@ function toBody(v: Values, forPreview = false): Body | null {
         ...(!forPreview && v.handover_note?.trim()
             ? { handover_note: v.handover_note.trim() }
             : {}),
+        ...(hours != null ? { hours } : {}),
     };
 }
 
@@ -89,15 +137,21 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
     const types = useLeaveTypes();
     const attempt = useRef<{ body: string; key: string } | null>(null);
     const [submitError, setSubmitError] = useState<unknown>(null);
+    const [savedId, setSavedId] = useState<string | null>(null);
+    const [fileError, setFileError] = useState<string | null>(null);
+    const [file, setFile] = useState<File | null>(null);
 
     const typeId = Form.useWatch('leave_type_id', form);
     const dates = Form.useWatch('dates', form);
     const halfDay = Form.useWatch('half_day', form);
     const dayPart = Form.useWatch('day_part', form);
+    const hours = Form.useWatch('hours', form);
     const reason = Form.useWatch('reason', form);
     const type = types.data?.find((t) => t.id === typeId);
-    const singleDay = !!dates?.[0] && !!dates?.[1] && dates[0].isSame(dates[1], 'day');
-    const halfDayAllowed = !!type?.allow_half_day && singleDay;
+    const oneDay = singleDay(dates);
+    const halfDayAllowed = !!type?.allow_half_day && oneDay;
+    const hourly = typeof hours === 'number' && hours >= 1;
+    const showHours = oneDay && !halfDay;
 
     useEffect(() => {
         if (!typeId && types.data?.[0]) form.setFieldValue('leave_type_id', types.data[0].id);
@@ -105,10 +159,20 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
     useEffect(() => {
         if (halfDay && !halfDayAllowed) form.setFieldValue('half_day', false);
     }, [halfDay, halfDayAllowed, form]);
+    useEffect(() => {
+        if (!showHours) form.setFieldValue('hours', null);
+    }, [showHours, form]);
 
     const previewBody = useDebounced(
         toBody(
-            { leave_type_id: typeId, dates, half_day: halfDay, day_part: dayPart, reason },
+            {
+                leave_type_id: typeId,
+                dates,
+                half_day: halfDay,
+                day_part: dayPart,
+                hours,
+                reason,
+            },
             true,
         ),
         300,
@@ -135,15 +199,39 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
 
     const onFinish = async (values: Values) => {
         const body = toBody(values);
-        if (!body) return;
-        // Same body → same key, so a retry after a lost response is not a second request.
-        // A changed body needs a new key (the server pins the key to the first body, incl. 422s).
-        const json = JSON.stringify(body);
-        if (attempt.current?.body !== json)
-            attempt.current = { body: json, key: crypto.randomUUID() };
+        if (!body && !savedId) return;
         setSubmitError(null);
+        setFileError(null);
         try {
-            await submit.mutateAsync({ body, key: attempt.current.key });
+            let id = savedId;
+            if (!id) {
+                if (!body) return;
+                // Same body → same key, so a retry after a lost response is not a second request.
+                // A changed body needs a new key (the server pins the key to the first body, incl. 422s).
+                const json = JSON.stringify(body);
+                if (attempt.current?.body !== json) {
+                    attempt.current = { body: json, key: crypto.randomUUID() };
+                }
+                const created = await submit.mutateAsync({ body, key: attempt.current.key });
+                id = created.data.id;
+            }
+            if (file) {
+                const payload = new FormData();
+                payload.set('file', file);
+                try {
+                    await unwrap(
+                        api.POST('/leave-requests/{leaveRequestId}/attachments', {
+                            params: { path: { leaveRequestId: id } },
+                            body: payload as unknown as { file: string },
+                        }),
+                    );
+                } catch (e) {
+                    setSavedId(id);
+                    setSubmitError(e);
+                    await queryClient.invalidateQueries();
+                    return;
+                }
+            }
             message.success('Leave request submitted');
             await queryClient.invalidateQueries();
             onDone();
@@ -158,6 +246,18 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                 form.setFields([...byField].map(([name, errors]) => ({ name, errors })));
             }
         }
+    };
+
+    const beforeUpload: UploadProps['beforeUpload'] = (upload) => {
+        const invalid = attachmentError(upload);
+        if (invalid) {
+            setFileError(invalid);
+            setFile(null);
+            return Upload.LIST_IGNORE;
+        }
+        setFileError(null);
+        setFile(upload);
+        return false;
     };
 
     const minDate = type ? dayjs().startOf('day').subtract(type.max_backdate_days, 'day') : null;
@@ -210,8 +310,12 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                 <Form.Item label="Half day" required={false}>
                     <Space wrap>
                         <Form.Item name="half_day" valuePropName="checked" noStyle>
-                            <Checkbox disabled={!halfDayAllowed} aria-label="Half day">
-                                {halfDayAllowed ? '' : 'Single day only'}
+                            <Checkbox disabled={!halfDayAllowed || hourly} aria-label="Half day">
+                                {halfDayAllowed
+                                    ? hourly
+                                        ? 'Not with hours'
+                                        : ''
+                                    : 'Single day only'}
                             </Checkbox>
                         </Form.Item>
                         {halfDay && (
@@ -227,6 +331,25 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                         )}
                     </Space>
                 </Form.Item>
+                {showHours && (
+                    <Form.Item
+                        name="hours"
+                        label="Hours"
+                        extra="Optional. 1–8 hours on this day. Not combined with a half day."
+                        rules={[
+                            {
+                                validator: async (_, value: number | null) => {
+                                    if (value == null) return;
+                                    if (!Number.isInteger(value) || value < 1 || value > 8) {
+                                        throw new Error('Enter 1 to 8 hours');
+                                    }
+                                },
+                            },
+                        ]}
+                    >
+                        <InputNumber min={1} max={8} precision={0} style={{ width: 120 }} />
+                    </Form.Item>
+                )}
                 <Form.Item label="No. of days">
                     <div aria-live="polite" data-testid="preview">
                         {preview.isFetching ? (
@@ -270,6 +393,33 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                 <Form.Item name="handover_note" label="Handover note">
                     <Input.TextArea maxLength={2000} rows={2} placeholder="Optional" />
                 </Form.Item>
+                <Form.Item label="Attachment" extra="Optional. One PNG, JPEG or PDF, up to 5 MB.">
+                    <Upload
+                        accept="image/png,image/jpeg,application/pdf,.png,.jpg,.jpeg,.pdf"
+                        maxCount={1}
+                        beforeUpload={beforeUpload}
+                        onRemove={() => {
+                            setFile(null);
+                            setFileError(null);
+                        }}
+                    >
+                        <Button>Choose file</Button>
+                    </Upload>
+                </Form.Item>
+                {fileError ? (
+                    <Form.Item wrapperCol={{ span: 24 }}>
+                        <Alert type="error" showIcon title={fileError} />
+                    </Form.Item>
+                ) : null}
+                {savedId ? (
+                    <Form.Item wrapperCol={{ span: 24 }}>
+                        <Alert
+                            type="warning"
+                            showIcon
+                            title="The leave request was saved. Upload the attachment again, or cancel."
+                        />
+                    </Form.Item>
+                ) : null}
                 {submitError !== null && (
                     <Form.Item wrapperCol={{ span: 24 }}>
                         <ProblemAlert error={submitError} />

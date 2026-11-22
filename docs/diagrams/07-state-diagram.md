@@ -6,7 +6,7 @@ Statuses are the `LeaveStatus` enum (`pending`, `approved`, `rejected`, `cancell
 stateDiagram-v2
     direction LR
     [*] --> pending : submit (owner) V1–V9 pass, action submitted
-    pending --> approved : approve (direct manager or hr_admin, never owner), debit −days
+    pending --> approved : approve (resolved approver, never owner), debit −days
     pending --> rejected : reject + comment (same as approve)
     pending --> cancelled : cancel (owner or hr_admin), no ledger row
     approved --> cancelled : cancel, reversal +days
@@ -39,7 +39,7 @@ stateDiagram-v2
 | From → To | Event | Who | Ledger | Notification (if module on) |
 |---|---|---|---|---|
 | — → pending | submit | owner | none | `LeaveRequestSubmitted` → approver(s) |
-| pending → approved | approve | resolved manager or any hr_admin, never owner | `debit −days` (tracked types) | `LeaveRequestDecided` → owner |
+| pending → approved | approve | the approver set in USE_CASES §3.6 (line manager, delegate, or hr_admin), never owner | `debit −days` (tracked types) | `LeaveRequestDecided` → owner |
 | pending → rejected | reject (comment required) | same as approve | none | `LeaveRequestDecided` → owner |
 | pending → cancelled | cancel | owner or hr_admin (or system on deactivation) | none | `LeaveRequestCancelled` → approver if owner cancelled |
 | approved → cancelled | cancel | owner if `start_date > today`; hr_admin any time (not own started leave) | `reversal +days` (full amount) | `LeaveRequestCancelled` → other party |

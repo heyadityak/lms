@@ -19,15 +19,17 @@ final class WorkingDayCalculator
 
     /**
      * Pure: no DB, no config (Unit-testable).
+     * Sandwich leave counts every calendar day in the range, including weekends and holidays.
      *
      * @param  list<int>  $weekendIsoDays  1 = Mon … 7 = Sun
      * @param  list<string>  $holidayDates  Y-m-d
      */
-    public static function count(CarbonInterface $start, CarbonInterface $end, DayPart $part, array $weekendIsoDays, array $holidayDates): float
+    public static function count(CarbonInterface $start, CarbonInterface $end, DayPart $part, array $weekendIsoDays, array $holidayDates, bool $sandwich = false): float
     {
         $days = 0;
         foreach (CarbonPeriod::create($start->toDateString(), $end->toDateString()) as $day) {
-            if (! in_array($day->dayOfWeekIso, $weekendIsoDays, true) && ! in_array($day->toDateString(), $holidayDates, true)) {
+            $off = in_array($day->dayOfWeekIso, $weekendIsoDays, true) || in_array($day->toDateString(), $holidayDates, true);
+            if ($sandwich || ! $off) {
                 $days++;
             }
         }
@@ -36,13 +38,27 @@ final class WorkingDayCalculator
         return $part->isHalf() ? $days * 0.5 : (float) $days;
     }
 
-    /** Effective weekend (setting `work.weekend_days` ?? env, D-30) and holidays (only when the module is on). */
-    public function forRange(CarbonInterface $start, CarbonInterface $end, DayPart $part): float
+    /**
+     * Effective weekend (setting `work.weekend_days` ?? env, D-30) and holidays (only when the module is on).
+     * A holiday counts when it is company-wide (location null) or tied to the user's location.
+     */
+    public function forRange(CarbonInterface $start, CarbonInterface $end, DayPart $part, ?int $locationId = null, bool $sandwich = false): float
     {
-        $holidays = $this->modules->enabled(Module::Holidays)
-            ? Holiday::query()->whereBetween('date', [$start->toDateString(), $end->toDateString()])->get()->map(fn (Holiday $h): string => $h->date->toDateString())->all()
-            : [];
+        $holidays = [];
+        if (! $sandwich && $this->modules->enabled(Module::Holidays)) {
+            $holidays = Holiday::query()
+                ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+                ->where(function ($query) use ($locationId): void {
+                    $query->whereNull('location_id');
+                    if ($locationId !== null) {
+                        $query->orWhere('location_id', $locationId);
+                    }
+                })
+                ->get()
+                ->map(fn (Holiday $holiday): string => $holiday->date->toDateString())
+                ->all();
+        }
 
-        return self::count($start, $end, $part, array_map('intval', (array) $this->settings->get('work.weekend_days')), $holidays);
+        return self::count($start, $end, $part, array_map('intval', (array) $this->settings->get('work.weekend_days')), $holidays, $sandwich);
     }
 }

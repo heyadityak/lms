@@ -24,6 +24,8 @@ final class UserResource extends JsonResource
             'role' => $this->role->value,
             'is_admin' => $this->is_admin,
             'department' => $this->department === null ? null : ['id' => $this->department->public_id, 'code' => $this->department->code, 'name' => $this->department->name],
+            'location' => $this->location === null ? null : ['id' => $this->location->public_id, 'code' => $this->location->code, 'name' => $this->location->name],
+            'avatar_url' => is_string($this->avatar_path) && $this->avatar_path !== '' ? route('api.v1.users.avatar', $this->resource) : null,
             'manager' => self::summary($this->manager),
             'employee_code' => $this->employee_code,
             'designation' => $this->designation,

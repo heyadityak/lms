@@ -1,8 +1,18 @@
 'use client';
 
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { App, Button, Empty, Popconfirm, Space, Table, type TableColumnsType } from 'antd';
+import {
+    App,
+    Button,
+    Empty,
+    Popconfirm,
+    Space,
+    Table,
+    Typography,
+    type TableColumnsType,
+} from 'antd';
 import dayjs from 'dayjs';
+import Link from 'next/link';
 import { useState } from 'react';
 import { ApiError, browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
 import { useTableQuery } from '@/lib/table';
@@ -135,6 +145,9 @@ export function ApprovalsView() {
     return (
         <>
             <PageTitle>Approvals</PageTitle>
+            <Typography.Paragraph>
+                <Link href="/approvals/delegation">Approval delegation</Link>
+            </Typography.Paragraph>
             {list.isError && <ProblemAlert error={list.error} onRetry={() => list.refetch()} />}
             <Table<LeaveRequest>
                 rowKey="id"

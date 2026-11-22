@@ -1,58 +1,116 @@
 'use client';
 
-import { LoginOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Flex, Typography } from 'antd';
+import { Alert, Button, Form, Input, Typography } from 'antd';
 import { useState } from 'react';
 
-/** Branded sign-in card; starts the Keycloak flow (Better Auth POST /auth/sign-in/social, D-45 (b)). */
-export function SignInCard({ name, logoUrl }: { name: string; logoUrl: string }) {
-    const [busy, setBusy] = useState(false);
-    const [failed, setFailed] = useState(false);
+const REJECTED = 'Those credentials were not accepted.';
+const UNAVAILABLE = 'Sign-in is unavailable. Try again shortly.';
 
-    async function signIn() {
+/** Branded welcome. Submits username and password to POST /bff/login (same origin). */
+export function SignInCard({
+    name,
+    logoUrl,
+    primaryColor,
+    primaryContrast,
+}: {
+    name: string;
+    logoUrl: string;
+    primaryColor: string;
+    primaryContrast: string;
+}) {
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<'rejected' | 'unavailable' | null>(null);
+
+    async function signIn(values: { username: string; password: string }) {
         setBusy(true);
-        setFailed(false);
+        setError(null);
         try {
-            const res = await fetch('/auth/sign-in/social', {
+            const res = await fetch('/bff/login', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider: 'keycloak', callbackURL: '/' }),
+                headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: values.username,
+                    password: values.password,
+                }),
             });
-            const body = (await res.json()) as { url?: string };
-            if (!res.ok || !body.url) throw new Error('sign-in failed');
-            window.location.assign(body.url);
+            if (res.status === 401) {
+                setError('rejected');
+                return;
+            }
+            if (!res.ok) {
+                setError('unavailable');
+                return;
+            }
+            // Full navigation so the new HttpOnly session cookie is on the document request.
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+            window.location.assign('/');
         } catch {
-            setFailed(true);
+            setError('unavailable');
+        } finally {
             setBusy(false);
         }
     }
 
     return (
-        <Card style={{ width: 360 }}>
-            <Flex vertical align="center" gap="medium">
-                {/* eslint-disable-next-line @next/next/no-img-element -- runtime brand asset from Laravel */}
-                <img src={logoUrl} alt="" height={48} />
-                <Typography.Title level={1} style={{ fontSize: 24, margin: 0 }}>
-                    {name}
+        <section className="lms-welcome" aria-labelledby="welcome-title">
+            <div
+                className="lms-welcome-brand"
+                style={{ background: primaryColor, color: primaryContrast }}
+            >
+                <div className="lms-welcome-logo">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- runtime brand asset from Laravel */}
+                    <img src={logoUrl} alt="" width={48} height={48} />
+                </div>
+                <p className="lms-welcome-kicker">Welcome</p>
+                <h1 id="welcome-title">{name}</h1>
+                <p className="lms-welcome-lead">
+                    Request leave, approve time off, and check your balances.
+                </p>
+            </div>
+            <div className="lms-welcome-panel">
+                <Typography.Title level={2} style={{ marginTop: 0, fontSize: 22 }}>
+                    Sign in
                 </Typography.Title>
-                {failed && (
+                <Typography.Paragraph style={{ marginBottom: 24 }}>
+                    Enter your username and password.
+                </Typography.Paragraph>
+                {error && (
                     <Alert
                         type="error"
                         showIcon
-                        title="Sign-in is unavailable. Try again shortly."
+                        style={{ marginBottom: 16 }}
+                        title={error === 'rejected' ? REJECTED : UNAVAILABLE}
                     />
                 )}
-                <Button
-                    type="primary"
-                    size="large"
-                    block
-                    icon={<LoginOutlined />}
-                    loading={busy}
-                    onClick={signIn}
+                <Form
+                    layout="vertical"
+                    requiredMark
+                    onFinish={(values: { username: string; password: string }) => {
+                        void signIn(values);
+                    }}
+                    autoComplete="on"
                 >
-                    Sign in with SSO
-                </Button>
-            </Flex>
-        </Card>
+                    <Form.Item
+                        name="username"
+                        label="Username"
+                        rules={[
+                            { required: true, whitespace: true, message: 'Username is required' },
+                        ]}
+                    >
+                        <Input autoComplete="username" autoFocus size="large" />
+                    </Form.Item>
+                    <Form.Item
+                        name="password"
+                        label="Password"
+                        rules={[{ required: true, message: 'Password is required' }]}
+                    >
+                        <Input.Password autoComplete="current-password" size="large" />
+                    </Form.Item>
+                    <Button type="primary" htmlType="submit" size="large" block loading={busy}>
+                        Sign in
+                    </Button>
+                </Form>
+            </div>
+        </section>
     );
 }

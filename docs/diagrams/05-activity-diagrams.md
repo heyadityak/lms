@@ -25,12 +25,12 @@ flowchart TB
         v1{"V1 type exists<br/>and active?"}
         v2{"V2 start ≥ today − max_backdate_days?"}
         v3{"V3 end ≥ start and same<br/>leave year (LEAVE_YEAR_START_MONTH)?"}
-        v4{"V4 half day only if one date<br/>and type allows it?"}
-        cnt["WorkingDayCalculator: drop weekends<br/>(work.weekend_days ?? LMS_WEEKEND_DAYS),<br/>drop holidays only if module holidays on,<br/>half day = 0.5"]
+        v4{"V4 half day only if one date<br/>and type allows it,<br/>and not together with hours?<br/>hours only on one day, 1 to 8?"}
+        cnt["WorkingDayCalculator: sandwich off drops weekends<br/>and the caller's holidays (global + location);<br/>sandwich on counts every date in the range;<br/>half day = 0.5; hours set days = hours/8"]
         v5{"V5 days > 0?"}
         v6{"V6 no pending / approved<br/>request overlaps?"}
         v7{"V7 tracks_balance?<br/>days ≤ balance − pending"}
-        v8{"V8 approver exists?<br/>manager, else other hr_admin"}
+        v8{"V8 approver exists?<br/>multi_level and days ≥ threshold: hr_admin;<br/>else manager, else hr_admin;<br/>covering delegation replaces that manager"}
         ins["Insert leave_requests status=pending, days<br/>insert leave_request_actions submitted"]
         exc{"Postgres EXCLUDE<br/>constraint 23P01?"}
         commit["Commit; store response for key (24 h)"]
@@ -91,7 +91,7 @@ flowchart TB
 
     subgraph POL["LeaveRequestPolicy::decide"]
         p1{"actor is requester?"}
-        p2{"actor is requester's active<br/>manager, or any hr_admin?"}
+        p2{"actor is in the approver set?<br/>manager, delegate, or hr_admin<br/>never the requester"}
     end
 
     subgraph ACT["Approve / RejectLeaveRequest (transaction, request row locked)"]
@@ -192,7 +192,7 @@ flowchart TB
         wl --> cf{"carry > 0?"}
         cf -- yes --> wc["Write carry_forward +carry in year"]
         cf -- no --> gr
-        wc --> gr["grant = annual_quota, prorated if joined in this leave year:<br/>months_remaining = 12 − ((join_month − start_month + 12) mod 12)"]
+        wc --> gr["yearly types only: grant = effective quota<br/>(department override or annual_quota),<br/>prorated if joined in this leave year.<br/>monthly types skip this grant"]
         gr --> clip["Clip so carry + grant ≤ max_balance"]
         clip --> wg["Write grant +grant in year"]
         wg --> idem{"Unique violation on<br/>(user, type, year, kind)?"}

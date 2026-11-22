@@ -5,7 +5,7 @@ import { createContext, useContext, useState, type ReactNode } from 'react';
 import { ApiError } from '@/lib/api/client';
 import type { NavUser } from './nav';
 
-export type ShellUser = NavUser & { id: string; name: string };
+export type ShellUser = NavUser & { id: string; name: string; avatar_url?: string | null };
 
 const ShellContext = createContext<{ user: ShellUser; modules: readonly string[] } | null>(null);
 

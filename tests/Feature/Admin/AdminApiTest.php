@@ -107,7 +107,7 @@ final class AdminApiTest extends TestCase
     public function test_admin_cannot_enable_an_unlicensed_module(): void
     {
         $this->problem(
-            $this->asAdmin()->patchJson('/api/v1/modules/multi_level_approval', ['enabled' => true]),
+            $this->asAdmin()->patchJson('/api/v1/modules/multi_level', ['enabled' => true]),
             422,
             'MODULE_NOT_LICENSED',
             '/modules/{moduleKey}',

@@ -82,6 +82,8 @@ classDiagram
         max_balance = 300.0
         allow_half_day = false
         max_backdate_days = 0
+        sandwich = false
+        accrual_frequency = yearly
     }
     class xmas["xmas : Holiday"] {
         date = 2026-12-25
@@ -95,6 +97,7 @@ classDiagram
         start_date = 2026-10-07
         end_date = 2026-10-09
         day_part = full
+        hours = null
         days = 3.0
         status = approved
         decided_by = 2
@@ -109,6 +112,7 @@ classDiagram
         start_date = 2026-12-21
         end_date = 2026-12-25
         day_part = full
+        hours = null
         days = 4.0
         status = pending
         decided_by = null

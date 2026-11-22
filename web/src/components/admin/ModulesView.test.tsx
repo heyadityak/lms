@@ -35,7 +35,7 @@ beforeEach(() => {
     patchStatus = 200;
     modules = [
         {
-            key: 'delegation',
+            key: 'multi_level',
             label: 'Delegation',
             licensed: false,
             available: false,
@@ -92,7 +92,7 @@ describe('ModulesView', () => {
     it('shows MODULE_NOT_LICENSED as a problem alert', async () => {
         modules = [
             {
-                key: 'delegation',
+                key: 'multi_level',
                 label: 'Delegation',
                 licensed: true,
                 available: true,

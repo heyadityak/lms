@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Actions\Accrual;
 
+use App\Enums\AccrualFrequency;
 use App\Enums\LedgerKind;
 use App\Models\LeaveLedgerEntry;
 use App\Models\LeaveType;
 use App\Models\User;
 use App\Services\AccrualCalculator;
+use App\Services\DepartmentQuota;
 use App\Support\LeaveYear;
 use Illuminate\Support\Facades\DB;
 
@@ -32,16 +34,30 @@ final class GrantInitialEntitlement
 
         DB::transaction(function () use ($user, $year, $joinYear): void {
             foreach (LeaveType::query()->where(['tracks_balance' => true, 'is_active' => true])->get() as $type) {
+                $quota = DepartmentQuota::for($user, $type);
+                if ($type->accrual_frequency === AccrualFrequency::Monthly) {
+                    $amount = AccrualCalculator::monthly($quota);
+                    if ($amount <= 0) {
+                        continue;
+                    }
+                    LeaveLedgerEntry::query()->firstOrCreate(
+                        ['user_id' => $user->id, 'leave_type_id' => $type->id, 'year' => $year, 'kind' => LedgerKind::Grant, 'accrual_month' => (int) now()->month],
+                        ['days' => $amount, 'note' => 'Monthly entitlement'],
+                    );
+
+                    continue;
+                }
+
                 $grant = $joinYear < $year
-                    ? $type->annual_quota
-                    : AccrualCalculator::prorate($type->annual_quota, $user->date_of_joining->month, (int) config('lms.leave_year_start_month', 1));
+                    ? $quota
+                    : AccrualCalculator::prorate($quota, $user->date_of_joining->month, (int) config('lms.leave_year_start_month', 1));
                 $grant = AccrualCalculator::clipGrant($grant, 0.0, $type->max_balance);
                 if ($grant <= 0) {
                     continue;
                 }
 
                 LeaveLedgerEntry::query()->firstOrCreate(
-                    ['user_id' => $user->id, 'leave_type_id' => $type->id, 'year' => $year, 'kind' => LedgerKind::Grant],
+                    ['user_id' => $user->id, 'leave_type_id' => $type->id, 'year' => $year, 'kind' => LedgerKind::Grant, 'accrual_month' => null],
                     ['days' => $grant, 'note' => $joinYear < $year ? 'Initial entitlement' : 'Prorated initial entitlement'],
                 );
             }

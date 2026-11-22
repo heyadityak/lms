@@ -22,11 +22,39 @@ final class LeaveRequestPolicy
     /** Owner, their direct manager, or hr_admin. Others get 404 so ids do not leak. */
     public function view(User $user, LeaveRequest $request): Response
     {
+        $manager = $request->user->manager;
         $allowed = $user->id === $request->user_id
             || $user->role === Role::HrAdmin
-            || $request->user->manager_id === $user->id;
+            || $request->user->manager_id === $user->id
+            || ($manager !== null && $this->approvers->isCurrentDelegate($user, $manager));
 
         return $allowed ? Response::allow() : Response::denyAsNotFound();
+    }
+
+    /** Owner, current approver, decided_by, or hr_admin. Everyone else is 404, including when the file is missing. */
+    public function readDocument(User $user, LeaveRequest $request): Response
+    {
+        $allowed = $user->id === $request->user_id
+            || $user->role === Role::HrAdmin
+            || $request->decided_by === $user->id
+            || $this->approvers->canDecide($user, $request);
+
+        return $allowed ? Response::allow() : Response::denyAsNotFound();
+    }
+
+    /** Owner, while the request is still pending. Anyone else who can see it gets 403; hidden requests stay 404. */
+    public function attach(User $user, LeaveRequest $request): Response
+    {
+        if (($visible = $this->view($user, $request))->denied()) {
+            return $visible;
+        }
+        if ($user->id !== $request->user_id) {
+            return Response::deny('Only the requester can change attachments.');
+        }
+
+        return $request->status === LeaveStatus::Pending
+            ? Response::allow()
+            : Response::deny('Attachments can only be changed while the request is pending.');
     }
 
     public function create(User $user): bool

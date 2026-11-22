@@ -5,16 +5,24 @@ declare(strict_types=1);
 use App\Enums\Module;
 use App\Http\Controllers\Api\V1\Admin\AdminUserController;
 use App\Http\Controllers\Api\V1\ApprovalController;
+use App\Http\Controllers\Api\V1\ApprovalDelegationController;
+use App\Http\Controllers\Api\V1\AuditLogController;
+use App\Http\Controllers\Api\V1\AvatarController;
 use App\Http\Controllers\Api\V1\BrandingController;
 use App\Http\Controllers\Api\V1\DepartmentController;
+use App\Http\Controllers\Api\V1\DepartmentLeaveQuotaController;
+use App\Http\Controllers\Api\V1\EncashmentController;
 use App\Http\Controllers\Api\V1\HolidayController;
+use App\Http\Controllers\Api\V1\LeaveAttachmentController;
 use App\Http\Controllers\Api\V1\LeaveRequestController;
 use App\Http\Controllers\Api\V1\LeaveTypeController;
 use App\Http\Controllers\Api\V1\LedgerEntryController;
+use App\Http\Controllers\Api\V1\LocationController;
 use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\ModuleController;
 use App\Http\Controllers\Api\V1\PublicBrandingController;
 use App\Http\Controllers\Api\V1\ReportController;
+use App\Http\Controllers\Api\V1\TeamCalendarController;
 use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\Api\V1\WorkingWeekController;
 use App\Http\Controllers\ApiDocsController;
@@ -36,6 +44,13 @@ Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-j
     Route::get('/me/balances', [MeController::class, 'balances'])->name('me.balances');
     Route::get('/me/leave-requests', [MeController::class, 'leaveRequests'])->name('me.leave-requests');
     Route::get('/me/ledger-entries', [LedgerEntryController::class, 'mine'])->name('me.ledger-entries');
+    Route::post('/me/avatar', [AvatarController::class, 'store'])->name('me.avatar.store');
+    Route::delete('/me/avatar', [AvatarController::class, 'destroy'])->name('me.avatar.destroy');
+    Route::get('/me/approval-delegations', [ApprovalDelegationController::class, 'show'])->name('me.approval-delegations.show');
+    Route::post('/me/approval-delegations', [ApprovalDelegationController::class, 'store'])->name('me.approval-delegations.store');
+    Route::delete('/me/approval-delegations', [ApprovalDelegationController::class, 'destroy'])->name('me.approval-delegations.destroy');
+
+    Route::get('/team-calendar', [TeamCalendarController::class, 'index'])->name('team-calendar');
 
     // HR admin (phase 13). Writes are hr_admin via policies (403); reads follow the spec x-roles.
     Route::get('/leave-types', [LeaveTypeController::class, 'index'])->name('leave-types.index');
@@ -51,17 +66,28 @@ Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-j
         Route::delete('/holidays/{holiday}', [HolidayController::class, 'destroy'])->name('holidays.destroy');
     });
 
+    Route::get('/locations', [LocationController::class, 'index'])->name('locations.index');
+    Route::post('/locations', [LocationController::class, 'store'])->name('locations.store');
+    Route::get('/locations/{location}', [LocationController::class, 'show'])->name('locations.show');
+    Route::patch('/locations/{location}', [LocationController::class, 'update'])->name('locations.update');
+    Route::delete('/locations/{location}', [LocationController::class, 'destroy'])->name('locations.destroy');
+
+    Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs.index');
+
     Route::get('/departments', [DepartmentController::class, 'index'])->name('departments.index');
     Route::post('/departments', [DepartmentController::class, 'store'])->name('departments.store');
     Route::get('/departments/{department}', [DepartmentController::class, 'show'])->name('departments.show');
     Route::patch('/departments/{department}', [DepartmentController::class, 'update'])->name('departments.update');
     Route::delete('/departments/{department}', [DepartmentController::class, 'destroy'])->name('departments.destroy');
+    Route::put('/departments/{department}/leave-quotas', [DepartmentLeaveQuotaController::class, 'update'])->name('departments.leave-quotas.update');
 
     Route::get('/users', [UserController::class, 'index'])->name('users.index');
     Route::get('/users/{user}', [UserController::class, 'show'])->name('users.show');
     Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
     Route::post('/users/{user}/deactivate', [UserController::class, 'deactivate'])->name('users.deactivate');
     Route::post('/users/{user}/activate', [UserController::class, 'activate'])->name('users.activate');
+    Route::get('/users/{user}/avatar', [AvatarController::class, 'show'])->name('users.avatar');
+    Route::post('/users/{user}/encashments', [EncashmentController::class, 'store'])->name('users.encashments.store');
     Route::get('/users/{user}/balances', [UserController::class, 'balances'])->name('users.balances');
     Route::get('/users/{user}/ledger-entries', [LedgerEntryController::class, 'index'])->name('users.ledger-entries.index');
     Route::post('/users/{user}/ledger-entries', [LedgerEntryController::class, 'store'])->name('users.ledger-entries.store');
@@ -75,6 +101,10 @@ Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-j
     Route::post('/leave-requests', [LeaveRequestController::class, 'store'])->middleware('idempotent')->name('leave-requests.store');
     Route::post('/leave-requests/preview', [LeaveRequestController::class, 'preview'])->name('leave-requests.preview');
     Route::get('/leave-requests/{leaveRequest}', [LeaveRequestController::class, 'show'])->name('leave-requests.show');
+    Route::get('/leave-requests/{leaveRequest}/pdf', [LeaveRequestController::class, 'pdf'])->name('leave-requests.pdf');
+    Route::get('/leave-requests/{leaveRequest}/attachments', [LeaveAttachmentController::class, 'show'])->name('leave-requests.attachments.show');
+    Route::post('/leave-requests/{leaveRequest}/attachments', [LeaveAttachmentController::class, 'store'])->name('leave-requests.attachments.store');
+    Route::delete('/leave-requests/{leaveRequest}/attachments', [LeaveAttachmentController::class, 'destroy'])->name('leave-requests.attachments.destroy');
     Route::post('/leave-requests/{leaveRequest}/approve', [ApprovalController::class, 'approve'])->name('leave-requests.approve');
     Route::post('/leave-requests/{leaveRequest}/reject', [ApprovalController::class, 'reject'])->name('leave-requests.reject');
     Route::post('/leave-requests/{leaveRequest}/cancel', [LeaveRequestController::class, 'cancel'])->name('leave-requests.cancel');

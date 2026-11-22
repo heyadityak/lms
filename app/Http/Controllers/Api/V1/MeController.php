@@ -23,7 +23,7 @@ final class MeController
     public function show(Request $request): JsonResponse
     {
         // Explicit 200: JsonResource answers 201 for a model created in this request (first-call provisioning).
-        return (new UserResource($request->user()->load('department', 'manager')))->additional(['meta' => new stdClass, 'links' => new stdClass])
+        return (new UserResource($request->user()->load('department', 'manager', 'location')))->additional(['meta' => new stdClass, 'links' => new stdClass])
             ->response()->setStatusCode(200);
     }
 

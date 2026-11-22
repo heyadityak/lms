@@ -23,10 +23,11 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { useState } from 'react';
 import { browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
 import { applyFieldErrors, unmappedError } from '@/lib/fields';
-import { useAllLeaveTypes, useDepartments } from '@/lib/queries';
+import { useAllLeaveTypes, useDepartments, useLocations } from '@/lib/queries';
 import { usePager } from '@/lib/table';
 import { useShell } from '../providers';
 import { ActiveTag, PageTitle, ProblemAlert, ROLE_LABEL } from '../ui';
+import { EncashModal } from './EncashModal';
 
 type User = Schemas['User'];
 type UserSort =
@@ -42,6 +43,7 @@ interface Filters {
 interface UserValues {
     department_id?: string | null;
     manager_id?: string | null;
+    location_id?: string | null;
     date_of_joining?: Dayjs | null;
     employee_code?: string;
     designation?: string;
@@ -133,6 +135,7 @@ export function UsersView() {
         { title: 'Email', key: 'email', dataIndex: 'email' },
         { title: 'Code', key: 'employee_code', render: (_, row) => row.employee_code ?? '—' },
         { title: 'Department', key: 'department', render: (_, row) => row.department?.name ?? '—' },
+        { title: 'Location', key: 'location', render: (_, row) => row.location?.name ?? '—' },
         { title: 'Role', key: 'role', render: (_, row) => ROLE_LABEL[row.role] },
         {
             title: 'Status',
@@ -304,11 +307,16 @@ function UserEditor({
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<unknown>(null);
     const departments = useDepartments();
+    const locations = useLocations();
+    const [encashing, setEncashing] = useState(false);
+    const { message } = App.useApp();
+    const queryClient = useQueryClient();
 
     const onFinish = async (values: UserValues) => {
         // Role, name and email come from Keycloak. Sending `role` is 422 ROLE_READ_ONLY.
         const body: Schemas['UserUpdate'] = {
             department_id: values.department_id ?? null,
+            location_id: values.location_id ?? null,
             manager_id: values.manager_id ?? null,
             employee_code: blank(values.employee_code),
             designation: blank(values.designation),
@@ -321,7 +329,10 @@ function UserEditor({
         setError(null);
         try {
             await unwrap(
-                api.PATCH('/users/{userId}', { params: { path: { userId: user.id } }, body }),
+                api.PATCH('/users/{userId}', {
+                    params: { path: { userId: user.id } },
+                    body,
+                }),
             );
             await onSaved();
         } catch (e) {
@@ -338,9 +349,12 @@ function UserEditor({
             title={`Edit ${user.name}`}
             onClose={onClose}
             extra={
-                <Button type="primary" loading={saving} onClick={() => form.submit()}>
-                    Save
-                </Button>
+                <Space>
+                    <Button onClick={() => setEncashing(true)}>Encash</Button>
+                    <Button type="primary" loading={saving} onClick={() => form.submit()}>
+                        Save
+                    </Button>
+                </Space>
             }
         >
             <Descriptions
@@ -368,6 +382,7 @@ function UserEditor({
                 initialValues={{
                     department_id: user.department?.id ?? null,
                     manager_id: user.manager?.id ?? null,
+                    location_id: user.location?.id ?? null,
                     date_of_joining: user.date_of_joining ? dayjs(user.date_of_joining) : null,
                     employee_code: user.employee_code ?? '',
                     designation: user.designation ?? '',
@@ -388,6 +403,18 @@ function UserEditor({
                 <Form.Item name="manager_id" label="Manager">
                     <ManagerSelect user={user} />
                 </Form.Item>
+                <Form.Item name="location_id" label="Location">
+                    <Select
+                        allowClear
+                        placeholder="No location"
+                        loading={locations.isFetching}
+                        options={(locations.data ?? []).map((location) => ({
+                            value: location.id,
+                            label: location.name,
+                        }))}
+                    />
+                </Form.Item>
+                {locations.isError ? <ProblemAlert error={locations.error} /> : null}
                 <Form.Item
                     name="date_of_joining"
                     label="Date of joining"
@@ -405,6 +432,18 @@ function UserEditor({
                     <Input maxLength={50} />
                 </Form.Item>
             </Form>
+            {encashing && (
+                <EncashModal
+                    userId={user.id}
+                    userName={user.name}
+                    onClose={() => setEncashing(false)}
+                    onSaved={async () => {
+                        message.success(`Encashed leave for ${user.name}`);
+                        setEncashing(false);
+                        await queryClient.invalidateQueries();
+                    }}
+                />
+            )}
         </Drawer>
     );
 }

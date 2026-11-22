@@ -176,6 +176,7 @@ classDiagram
         Debit = debit
         Reversal = reversal
         Adjustment = adjustment
+        Encashment = encashment
         +isYearly() bool
     }
     class LeaveAction {
@@ -192,8 +193,7 @@ classDiagram
         Api = api
         Notifications = notifications
         UserManagement = user_management
-        MultiLevelApproval = multi_level_approval
-        Delegation = delegation
+        MultiLevel = multi_level
     }
 
     Department "0..1" -- "0..*" User : department_id
@@ -285,8 +285,8 @@ classDiagram
     }
     class WorkingDayCalculator {
         <<Service>>
-        +count(start, end, DayPart part, array weekendIsoDays, array holidayDates)$ float
-        +forRange(start, end, DayPart part) float
+        +count(start, end, DayPart part, array weekendIsoDays, array holidayDates, bool sandwich, ?int hours)$ float
+        +forRange(start, end, DayPart part, bool sandwich, ?int hours) float
     }
     class LeaveBalanceService {
         <<Service>>
@@ -297,7 +297,7 @@ classDiagram
     }
     class ApproverResolver {
         <<Service (new)>>
-        +approversFor(User requester) Collection
+        +approversFor(User requester, float days) Collection
         +canDecide(User actor, LeaveRequest r) bool
     }
     class LeaveRequestQuery {
@@ -733,6 +733,21 @@ Notes:
 Already named in the docs: `User`, `Department`, `LeaveType`, `Holiday`, `LeaveRequest`, `LeaveRequestAction`, `LeaveLedgerEntry`, `Setting`; enums `Role`, `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module`; `SubmitLeaveRequest`, `ApproveLeaveRequest`, `RejectLeaveRequest`, `CancelLeaveRequest`, `GrantInitialEntitlement`, `RunYearStartAccrual`, `DeactivateUser`, `WorkingDayCalculator`, `LeaveBalanceService`, `Settings`, `Modules`, `AccrueYear`, `InvalidTransition`, `EnsureModuleEnabled`, `EnsureUserIsActive`, `RequestId`, `HealthController`, `LeaveRequestPolicy`, `UserPolicy`, `DepartmentPolicy`, `LeaveTypePolicy`, `HolidayPolicy`, `SettingsPolicy`, `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled`.
 
 UC-S4 (phase 18): `ApprovalReminder` (`App\Models`), `SendPendingApprovalReminders` and `PendingApprovalReminderSummary` (`App\Actions\Leave`), `RemindPendingApprovals` (`App\Console\Commands`), `PendingApprovalsReminder` (`App\Notifications`). `LeaveRequestQuery::approvableBy` already exists and is the approvals inbox; the reminder calls it and does not add a second visibility rule.
+
+Phase 19 (D-53, D-54, D-55, D-56, D-58). `Module` no longer has `multi_level_approval` or `delegation`. The key is `multi_level`. Delegation is core, not a module. `LedgerKind` includes `Encashment`. New types the domain agent adopts:
+
+| Class | Namespace | Purpose |
+|---|---|---|
+| `AccrualFrequency` | `App\Enums` | `yearly` (default), `monthly` |
+| `Location`, `LeaveRequestAttachment`, `DepartmentLeaveQuota`, `ApprovalDelegation`, `AuditLog` | `App\Models` | Phase 19 tables. `AuditLog` is append-only |
+| `StoreLeaveAttachment`, `DeleteLeaveAttachment`, `RenderLeaveRequestPdf`, `StoreApprovalDelegation`, `DeleteApprovalDelegation`, `SendStaleApprovalEscalations` | `App\Actions\Leave` | UC-E10, UC-E12, UC-M5, UC-M7 |
+| `StoreAvatar`, `DeleteAvatar` | `App\Actions\Users` | UC-E11 |
+| `RunMonthlyAccrual`, `EncashLeave` | `App\Actions\Accrual` | UC-H13, UC-H11 |
+| `UpsertDepartmentLeaveQuota` | `App\Actions\Settings` | UC-H10. Null quota deletes the row |
+| `AccrueMonth`, `EscalateStaleApprovals` | `App\Console\Commands` | `lms:accrue-month`, `lms:escalate-stale-approvals` |
+| `LeaveRequestEscalated` | `App\Notifications` | UC-M7 mail. UC-S2 views. Link `/leave-requests/{id}` |
+
+`ApproverResolver::approversFor` takes `days` so the `multi_level` threshold and a covering delegation can change the set (USE_CASES §3.6). `WorkingDayCalculator::count` takes `sandwich` and `hours`.
 
 New (introduced by this run, D-20/D-21/D-22):
 

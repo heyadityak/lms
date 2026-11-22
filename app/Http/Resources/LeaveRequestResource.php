@@ -28,6 +28,7 @@ final class LeaveRequestResource extends JsonResource
             'end_date' => $this->end_date->toDateString(),
             'day_part' => $this->day_part->value,
             'days' => $this->days,
+            'hours' => $this->hours,
             'status' => $this->status->value,
             'reason' => $this->reason,
             'handover_note' => $this->handover_note,

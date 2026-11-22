@@ -11,15 +11,13 @@ export default async function SignInPage() {
     const brand = await getBranding();
 
     return (
-        <main
-            style={{
-                minHeight: '100vh',
-                display: 'grid',
-                placeItems: 'center',
-                background: 'var(--ant-color-bg-layout)',
-            }}
-        >
-            <SignInCard name={brand.name} logoUrl={brand.logo_url} />
+        <main className="lms-signin">
+            <SignInCard
+                name={brand.name}
+                logoUrl={brand.logo_url}
+                primaryColor={brand.primary_color}
+                primaryContrast={brand.primary_contrast}
+            />
         </main>
     );
 }

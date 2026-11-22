@@ -44,6 +44,7 @@ class User extends Authenticatable
         'designation',
         'employment_type',
         'date_of_joining',
+        'location_id',
     ];
 
     protected function casts(): array
@@ -61,6 +62,12 @@ class User extends Authenticatable
     public function department(): BelongsTo
     {
         return $this->belongsTo(Department::class);
+    }
+
+    /** @return BelongsTo<Location, $this> */
+    public function location(): BelongsTo
+    {
+        return $this->belongsTo(Location::class);
     }
 
     /** @return BelongsTo<User, $this> */

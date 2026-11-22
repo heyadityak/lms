@@ -5,11 +5,10 @@ import {
     BellOutlined,
     CalendarOutlined,
     CheckSquareOutlined,
-    DownOutlined,
-    LogoutOutlined,
     MenuOutlined,
     ScheduleOutlined,
     SettingOutlined,
+    TeamOutlined,
 } from '@ant-design/icons';
 import { Badge, Button, Drawer, Dropdown, Grid, Layout, Space, Typography, theme } from 'antd';
 import Link from 'next/link';
@@ -19,11 +18,13 @@ import { usePendingApprovalCount } from '@/lib/queries';
 import { FIGMA, activeNavColor } from '@/theme/brand';
 import { navItems, selectedKey, type NavItem } from './nav';
 import { AppProviders, type ShellUser } from './providers';
-import { InitialsAvatar, initials, isApprover } from './ui';
+import { isApprover } from './ui';
+import { UserMenu } from './UserMenu';
 
 const ICONS: Record<string, ReactNode> = {
     '/': <AppstoreOutlined />,
     '/leave-requests': <ScheduleOutlined />,
+    '/team-calendar': <TeamOutlined />,
     '/approvals': <CheckSquareOutlined />,
     '/holidays': <CalendarOutlined />,
     '/admin': <SettingOutlined />,
@@ -294,33 +295,12 @@ function Shell({
                                 </Badge>
                             </Link>
                         )}
-                        <Dropdown
-                            trigger={['click']}
-                            menu={{
-                                items: [
-                                    { key: 'logout', icon: <LogoutOutlined />, label: 'Sign out' },
-                                ],
-                                onClick: ({ key }) => {
-                                    if (key === 'logout') logoutForm.current?.requestSubmit();
-                                },
-                            }}
-                        >
-                            <Button
-                                type="text"
-                                aria-label={`${initials(user.name)} ${user.name}, User menu for ${user.name}`}
-                                style={{ height: 48 }}
-                            >
-                                <Space>
-                                    <InitialsAvatar name={user.name} />
-                                    {!mobile && (
-                                        <span
-                                            style={{ color: FIGMA.heading }}
-                                        >{` ${user.name}`}</span>
-                                    )}
-                                    <DownOutlined style={{ color: FIGMA.heading }} />
-                                </Space>
-                            </Button>
-                        </Dropdown>
+                        <UserMenu
+                            id={user.id}
+                            name={user.name}
+                            avatarUrl={user.avatar_url}
+                            mobile={mobile}
+                        />
                     </Space>
                     <form ref={logoutForm} method="post" action="/bff/logout" hidden />
                 </Layout.Header>

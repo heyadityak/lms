@@ -72,6 +72,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload or replace my avatar
+         * @description PNG, JPEG, or WebP, max 1 MB. SVG is rejected (415). Stored on the S3 disk
+         *     (`BRANDING_DISK`) and streamed only by `GET /users/{id}/avatar` (UC-E11).
+         *     Replaces any previous file. 204 has no body.
+         */
+        post: operations["uploadMyAvatar"];
+        /** Remove my avatar */
+        delete: operations["deleteMyAvatar"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/approval-delegations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My approval delegation, if I have one
+         * @description One row per caller (UC-M5). 404 when there is none.
+         */
+        get: operations["getMyApprovalDelegation"];
+        put?: never;
+        /**
+         * Delegate my approvals for a date window
+         * @description Body `delegate_id`, `start_date`, `end_date`. The delegate is an active
+         *     `manager` or `hr_admin` and is not the caller. One row. A second POST is
+         *     422. While the window covers today, `ApproverResolver` uses the delegate (UC-M5).
+         */
+        post: operations["createMyApprovalDelegation"];
+        /** Remove my approval delegation */
+        delete: operations["deleteMyApprovalDelegation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/leave-requests": {
         parameters: {
             query?: never;
@@ -88,6 +138,7 @@ export interface paths {
         /**
          * Apply for leave
          * @description Runs validation V1–V9 (USE_CASES §3.4). `days` is computed by the server.
+         *     Optional `hours` (1–8) is a single-day request and is mutually exclusive with a half day (UC-E14).
          *     Supports `Idempotency-Key` (Redis, 24 h): a retry with the same key and body
          *     replays the original response with `Idempotent-Replayed: true`.
          */
@@ -155,7 +206,11 @@ export interface paths {
         put?: never;
         /**
          * Approve a pending request
-         * @description Re-checks overlap and balance, writes a `debit` ledger entry when the type tracks balance.
+         * @description The caller must be in the approver set (USE_CASES §3.6): the line manager, that
+         *     manager's delegate while the delegation covers today, or `hr_admin`. When module
+         *     `multi_level` is enabled and `days` ≥ `LEAVE_HR_APPROVAL_DAYS`, only `hr_admin`
+         *     may approve. Re-checks overlap and balance, writes a `debit` ledger entry when
+         *     the type tracks balance.
          */
         post: operations["approveLeaveRequest"];
         delete?: never;
@@ -207,6 +262,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/leave-requests/{leaveRequestId}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                leaveRequestId: components["parameters"]["LeaveRequestId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Download the request's attachment
+         * @description One file. Owner, a user in the current approver set, `decided_by`, or `hr_admin`.
+         *     404 when there is no file or the caller may not read it (UC-E10).
+         */
+        get: operations["getLeaveRequestAttachment"];
+        put?: never;
+        /**
+         * Attach one file to a pending request
+         * @description Owner only, and only while status is `pending`. PNG, JPEG, or PDF, max 5 MB.
+         *     SVG is 415. A second file while one exists is 422 (delete it first). Stored on
+         *     the S3 disk (UC-E10).
+         */
+        post: operations["uploadLeaveRequestAttachment"];
+        /**
+         * Remove the attachment from a pending request
+         * @description Owner only, while status is `pending`.
+         */
+        delete: operations["deleteLeaveRequestAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/leave-requests/{leaveRequestId}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                leaveRequestId: components["parameters"]["LeaveRequestId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Download the leave application as PDF
+         * @description Owner, a user in the current approver set, `decided_by`, or `hr_admin`.
+         *     Rendered on demand (not stored). 404 when the caller may not read the request (UC-E12).
+         */
+        get: operations["getLeaveRequestPdf"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/approvals": {
         parameters: {
             query?: never;
@@ -216,9 +327,34 @@ export interface paths {
         };
         /**
          * Approval inbox
-         * @description Requests the caller may decide (direct reports; any for hr_admin, never own).
+         * @description Requests the caller may decide (USE_CASES §3.6). A manager sees direct reports
+         *     that were not routed to HR, plus requests delegated to them, and not requests
+         *     they have delegated away. `hr_admin` sees every pending request except their own.
          */
         get: operations["listApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team-calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Approved leave in the caller's department
+         * @description Any role. `from` and `to` are required. Approved requests only, overlapping
+         *     that window. Same department as the caller. No department means only the
+         *     caller's own leave. No reason and no pending rows (UC-E13). Not paginated.
+         *     Inclusive span longer than 366 days (`to - from > 365`) is 422.
+         */
+        get: operations["listTeamCalendar"];
         put?: never;
         post?: never;
         delete?: never;
@@ -438,6 +574,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/users/{userId}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        /** The user's avatar image, or 404 when unset */
+        get: operations["getUserAvatar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{userId}/encashments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Encash available leave
+         * @description Appends an `encashment` ledger row for the current leave year. `days` in the
+         *     body is positive; the stored amount is negative. 422 `INSUFFICIENT_BALANCE`
+         *     when `days` exceeds available. The type must track balance (UC-H11).
+         */
+        post: operations["createEncashment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/users": {
         parameters: {
             query?: never;
@@ -616,6 +795,90 @@ export interface paths {
         head?: never;
         /** Update a department */
         patch: operations["updateDepartment"];
+        trace?: never;
+    };
+    "/departments/{departmentId}/leave-quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                departmentId: components["parameters"]["DepartmentId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set or clear one department leave-quota override
+         * @description `annual_quota` upserts the override for `leave_type_id` (200).
+         *     `null` deletes it (204). Grants use the override when the row exists (UC-H10).
+         */
+        put: operations["putDepartmentLeaveQuota"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Locations */
+        get: operations["listLocations"];
+        put?: never;
+        /** Create a location */
+        post: operations["createLocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/locations/{locationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                locationId: components["parameters"]["LocationId"];
+            };
+            cookie?: never;
+        };
+        /** Location detail */
+        get: operations["getLocation"];
+        put?: never;
+        post?: never;
+        /** Delete a location that has no users and no holidays */
+        delete: operations["deleteLocation"];
+        options?: never;
+        head?: never;
+        /** Update a location */
+        patch: operations["updateLocation"];
+        trace?: never;
+    };
+    "/audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * HR audit log
+         * @description Department, leave type, holiday, location, quota, encashment, and user LMS-field
+         *     changes. Not leave-request transitions and not identity-admin audits (UC-H15).
+         *     Newest first.
+         */
+        get: operations["listAuditLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/branding": {
@@ -832,8 +1095,17 @@ export interface components {
          * @example 01JD3M7V1Q8Z6K2H5R9T4W0XYZ
          */
         Ulid: string;
-        /** @description Day amount, always a multiple of 0.5. */
+        /** @description Quota or adjustment amount, a multiple of 0.5. */
         Days: number;
+        /** @description Server-computed leave length. A full day, 0.5, or hours/8. */
+        RequestDays: number;
+        /**
+         * @description Non-negative derived balance (ledger sum, or that sum minus pending).
+         *     Zero is allowed. Not a multiple of 0.5 or 0.125: an hourly debit leaves
+         *     eighths (for example 29.75) and a monthly grant or encashment leaves up
+         *     to 3 decimal places (D-53, D-58).
+         */
+        BalanceAmount: number;
         /**
          * @description Base LMS realm role, exactly one per user (read-only outside `/admin/users/{id}/roles`).
          * @enum {string}
@@ -849,11 +1121,17 @@ export interface components {
         /** @enum {string} */
         DayPart: "full" | "first_half" | "second_half";
         /** @enum {string} */
-        LedgerKind: "grant" | "carry_forward" | "lapse" | "debit" | "reversal" | "adjustment";
+        LedgerKind: "grant" | "carry_forward" | "lapse" | "debit" | "reversal" | "adjustment" | "encashment";
+        /** @enum {string} */
+        AccrualFrequency: "yearly" | "monthly";
         /** @enum {string} */
         LeaveAction: "submitted" | "approved" | "rejected" | "cancelled";
-        /** @enum {string} */
-        ModuleKey: "holidays" | "reports" | "api" | "notifications" | "user_management" | "multi_level_approval" | "delegation";
+        /**
+         * @description `multi_level` is available and is licensed only when listed in `MODULES_ENABLED` (D-54).
+         *     It changes who approves long requests. It does not gate a route.
+         * @enum {string}
+         */
+        ModuleKey: "holidays" | "reports" | "api" | "notifications" | "user_management" | "multi_level";
         /** @example #1f6feb */
         HexColor: string;
         Links: {
@@ -901,7 +1179,7 @@ export interface components {
          * @description Stable machine-readable error code. See API_GUIDELINES §4.
          * @enum {string}
          */
-        ProblemCode: "BAD_REQUEST" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "NOT_ACCEPTABLE" | "INVALID_TRANSITION" | "IDEMPOTENCY_IN_PROGRESS" | "DEPARTMENT_NOT_EMPTY" | "UNSUPPORTED_MEDIA_TYPE" | "VALIDATION_FAILED" | "LEAVE_TYPE_INACTIVE" | "BACKDATE_LIMIT_EXCEEDED" | "INVALID_DATE_RANGE" | "HALF_DAY_NOT_ALLOWED" | "NO_WORKING_DAYS" | "LEAVE_OVERLAP" | "INSUFFICIENT_BALANCE" | "NO_APPROVER" | "COMMENT_REQUIRED" | "IDEMPOTENCY_KEY_REUSED" | "MODULE_NOT_LICENSED" | "MANAGER_CYCLE" | "ROLE_READ_ONLY" | "SELF_MODIFICATION_FORBIDDEN" | "LAST_ADMIN" | "IDP_CONFLICT" | "IDP_READ_ONLY" | "IDP_UNAVAILABLE" | "RATE_LIMITED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+        ProblemCode: "BAD_REQUEST" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "NOT_ACCEPTABLE" | "INVALID_TRANSITION" | "IDEMPOTENCY_IN_PROGRESS" | "DEPARTMENT_NOT_EMPTY" | "LOCATION_NOT_EMPTY" | "UNSUPPORTED_MEDIA_TYPE" | "VALIDATION_FAILED" | "LEAVE_TYPE_INACTIVE" | "BACKDATE_LIMIT_EXCEEDED" | "INVALID_DATE_RANGE" | "HALF_DAY_NOT_ALLOWED" | "NO_WORKING_DAYS" | "LEAVE_OVERLAP" | "INSUFFICIENT_BALANCE" | "NO_APPROVER" | "COMMENT_REQUIRED" | "IDEMPOTENCY_KEY_REUSED" | "MODULE_NOT_LICENSED" | "MANAGER_CYCLE" | "ROLE_READ_ONLY" | "SELF_MODIFICATION_FORBIDDEN" | "LAST_ADMIN" | "IDP_CONFLICT" | "IDP_READ_ONLY" | "IDP_UNAVAILABLE" | "RATE_LIMITED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
         UserSummary: {
             id: components["schemas"]["Ulid"];
             name: string;
@@ -929,6 +1207,7 @@ export interface components {
             /** @description Holds the additive realm role `admin` (D-29). */
             readonly is_admin: boolean;
             department: components["schemas"]["DepartmentSummary"] | null;
+            location: components["schemas"]["LocationSummary"] | null;
             manager: components["schemas"]["UserSummary"] | null;
             employee_code: string | null;
             designation: string | null;
@@ -936,6 +1215,11 @@ export interface components {
             /** Format: date */
             date_of_joining: string | null;
             is_active: boolean;
+            /**
+             * Format: uri
+             * @description Absolute URL of `GET /users/{id}/avatar`, or null when unset.
+             */
+            avatar_url: string | null;
             /** Format: date-time */
             last_login_at: string | null;
             /** Format: date-time */
@@ -949,6 +1233,7 @@ export interface components {
         /** @description HR-owned fields only. `role`, `name`, `email` are rejected (422 `ROLE_READ_ONLY` / `VALIDATION_FAILED`). */
         UserUpdate: {
             department_id?: components["schemas"]["Ulid"] | null;
+            location_id?: components["schemas"]["Ulid"] | null;
             manager_id?: components["schemas"]["Ulid"] | null;
             /** Format: date */
             date_of_joining?: string;
@@ -961,6 +1246,8 @@ export interface components {
             code: string;
             name: string;
             users_count: number;
+            /** @description Department overrides. Empty when the type's own annual_quota applies. */
+            leave_quotas: components["schemas"]["DepartmentLeaveQuota"][];
         };
         DepartmentWrite: {
             code: string;
@@ -978,6 +1265,9 @@ export interface components {
             max_balance: components["schemas"]["Days"] | null;
             allow_half_day: boolean;
             max_backdate_days: number;
+            /** @description When true, weekends and holidays inside the range count (D-56). Default false. */
+            sandwich: boolean;
+            accrual_frequency: components["schemas"]["AccrualFrequency"];
             is_active: boolean;
         };
         LeaveTypeCreate: {
@@ -991,6 +1281,9 @@ export interface components {
             allow_half_day: boolean;
             /** @default 0 */
             max_backdate_days: number;
+            /** @default false */
+            sandwich: boolean;
+            accrual_frequency?: components["schemas"]["AccrualFrequency"];
         };
         LeaveTypeUpdate: {
             name?: string;
@@ -1000,6 +1293,8 @@ export interface components {
             max_balance?: components["schemas"]["Days"] | null;
             allow_half_day?: boolean;
             max_backdate_days?: number;
+            sandwich?: boolean;
+            accrual_frequency?: components["schemas"]["AccrualFrequency"];
             is_active?: boolean;
         };
         Holiday: {
@@ -1007,11 +1302,15 @@ export interface components {
             /** Format: date */
             date: string;
             name: string;
+            /** @description Null means the holiday applies to every location. */
+            location: components["schemas"]["LocationSummary"] | null;
         };
         HolidayWrite: {
             /** Format: date */
             date: string;
             name: string;
+            /** @description Omit or null for a holiday that applies to every location. */
+            location_id?: components["schemas"]["Ulid"] | null;
         };
         LeaveRequestAction: {
             id: components["schemas"]["Ulid"];
@@ -1032,7 +1331,9 @@ export interface components {
             /** Format: date */
             end_date: string;
             day_part: components["schemas"]["DayPart"];
-            days: components["schemas"]["Days"];
+            /** @description Set on an hourly single-day request. Null otherwise. `days = hours / 8`. */
+            hours: number | null;
+            days: components["schemas"]["RequestDays"];
             status: components["schemas"]["LeaveStatus"];
             reason: string;
             handover_note: string | null;
@@ -1067,17 +1368,21 @@ export interface components {
             /** Format: date */
             end_date: string;
             day_part: components["schemas"]["DayPart"];
+            /** @description Optional. Single day only, and not together with a half day. */
+            hours?: number;
             reason: string;
             handover_note?: string | null;
         };
         LeaveRequestPreview: {
-            days: components["schemas"]["Days"];
+            days: components["schemas"]["RequestDays"];
             /** @description Leave year label (D-26). */
             leave_year: number;
             /** @description false for e.g. LWP; then both balances are null. */
             tracks_balance: boolean;
-            available_before: components["schemas"]["Days"] | null;
-            available_after: components["schemas"]["Days"] | null;
+            /** @description Null when `tracks_balance` is false. */
+            available_before: components["schemas"]["BalanceAmount"] | null;
+            /** @description `available_before` minus `days`. Null when `tracks_balance` is false. */
+            available_after: components["schemas"]["BalanceAmount"] | null;
         };
         DecisionComment: {
             comment?: string | null;
@@ -1086,8 +1391,12 @@ export interface components {
             comment: string;
         };
         /**
-         * @description entitled = grant + carry_forward + lapse + adjustment; used = -(debit + reversal);
+         * @description entitled = grant + carry_forward + lapse + adjustment;
+         *     used = -(debit + reversal + encashment);
          *     balance = entitled - used = SUM(ledger); available = balance - pending.
+         *     These amounts are plain numbers, not `Days` or `RequestDays`: an hourly
+         *     debit leaves eighths and a monthly grant or encashment leaves up to 3
+         *     decimal places. `available` may be negative when pending exceeds the ledger.
          */
         Balance: {
             leave_type: components["schemas"]["LeaveTypeSummary"];
@@ -1103,7 +1412,7 @@ export interface components {
             leave_type: components["schemas"]["LeaveTypeSummary"];
             year: number;
             kind: components["schemas"]["LedgerKind"];
-            /** @description Signed. */
+            /** @description Signed. Up to 3 decimal places. Not limited to multiples of 0.5 (monthly grants, hourly debits, encashment). */
             days: number;
             leave_request_id: components["schemas"]["Ulid"] | null;
             /** @description null = system (accrual job). */
@@ -1119,6 +1428,104 @@ export interface components {
             /** @description Signed, non-zero. */
             days: number;
             note: string;
+        };
+        EncashmentCreate: {
+            leave_type_id: components["schemas"]["Ulid"];
+            /** @description Positive. Stored on the ledger as a negative `encashment` row. Must be ≤ available. */
+            days: number;
+            note: string;
+        };
+        LocationSummary: {
+            id: components["schemas"]["Ulid"];
+            code: string;
+            name: string;
+        };
+        Location: {
+            id: components["schemas"]["Ulid"];
+            code: string;
+            name: string;
+        };
+        LocationWrite: {
+            code: string;
+            name: string;
+        };
+        LocationEnvelope: {
+            data: components["schemas"]["Location"];
+            meta: Record<string, never>;
+            links: Record<string, never>;
+        };
+        DepartmentLeaveQuota: {
+            leave_type_id: components["schemas"]["Ulid"];
+            annual_quota: components["schemas"]["Days"];
+        };
+        DepartmentLeaveQuotaWrite: {
+            leave_type_id: components["schemas"]["Ulid"];
+            /** @description A number upserts. Null deletes the override. */
+            annual_quota: components["schemas"]["Days"] | null;
+        };
+        DepartmentLeaveQuotaEnvelope: {
+            data: components["schemas"]["DepartmentLeaveQuota"];
+            meta: Record<string, never>;
+            links: Record<string, never>;
+        };
+        LeaveAttachment: {
+            id: components["schemas"]["Ulid"];
+            file_name: string;
+            /** @enum {string} */
+            content_type: "image/png" | "image/jpeg" | "application/pdf";
+            byte_size: number;
+        };
+        LeaveAttachmentEnvelope: {
+            data: components["schemas"]["LeaveAttachment"];
+            meta: Record<string, never>;
+            links: Record<string, never>;
+        };
+        ApprovalDelegation: {
+            id: components["schemas"]["Ulid"];
+            delegate: components["schemas"]["UserSummary"];
+            /** Format: date */
+            start_date: string;
+            /** Format: date */
+            end_date: string;
+        };
+        ApprovalDelegationWrite: {
+            delegate_id: components["schemas"]["Ulid"];
+            /** Format: date */
+            start_date: string;
+            /** Format: date */
+            end_date: string;
+        };
+        ApprovalDelegationEnvelope: {
+            data: components["schemas"]["ApprovalDelegation"];
+            meta: Record<string, never>;
+            links: Record<string, never>;
+        };
+        TeamCalendarEntry: {
+            user_name: string;
+            leave_type_name: string;
+            /** Format: date */
+            start_date: string;
+            /** Format: date */
+            end_date: string;
+            days: components["schemas"]["RequestDays"];
+        };
+        AuditLog: {
+            id: components["schemas"]["Ulid"];
+            actor: components["schemas"]["UserSummary"];
+            /** @enum {string} */
+            action: "created" | "updated" | "deleted";
+            /** @enum {string} */
+            subject_type: "department" | "leave_type" | "holiday" | "location" | "leave_quota" | "encashment" | "user";
+            subject_id: components["schemas"]["Ulid"] | null;
+            /** @description `before` and `after` of the changed fields. No secrets. */
+            changes: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            created_at: string;
+        };
+        AuditLogList: components["schemas"]["PaginatedEnvelope"] & {
+            data?: components["schemas"]["AuditLog"][];
         };
         Branding: {
             name: string;
@@ -1172,12 +1579,13 @@ export interface components {
             /** Format: date */
             end_date: string;
             day_part: components["schemas"]["DayPart"];
-            days: components["schemas"]["Days"];
+            days: components["schemas"]["RequestDays"];
             status: components["schemas"]["LeaveStatus"];
             decided_by: string | null;
             /** Format: date-time */
             decided_at: string | null;
         };
+        /** @description Same amounts as `Balance`. Not limited to multiples of 0.5 or 0.125. */
         BalanceReportRow: {
             employee_code: string | null;
             employee: string;
@@ -1368,7 +1776,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LAST_ADMIN`). */
+        /** @description State conflict (`INVALID_TRANSITION`, `IDEMPOTENCY_IN_PROGRESS`, `DEPARTMENT_NOT_EMPTY`, `LOCATION_NOT_EMPTY`, `LAST_ADMIN`). */
         Conflict: {
             headers: {
                 "Retry-After": components["headers"]["Retry-After"];
@@ -1648,6 +2056,7 @@ export interface components {
         HolidayId: components["schemas"]["Ulid"];
         UserId: components["schemas"]["Ulid"];
         DepartmentId: components["schemas"]["Ulid"];
+        LocationId: components["schemas"]["Ulid"];
         /** @description 1-based page number. Above 10000 → 422 `VALIDATION_FAILED`. */
         PageNumber: number;
         PageSize: number;
@@ -1789,6 +2198,134 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    uploadMyAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Stored. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    deleteMyAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getMyApprovalDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The delegation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDelegationEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createMyApprovalDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDelegationWrite"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    /** @description URL of this delegation (`/me/approval-delegations`). */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDelegationEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    deleteMyApprovalDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2019,6 +2556,120 @@ export interface operations {
             429: components["responses"]["TooManyRequests"];
         };
     };
+    getLeaveRequestAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                leaveRequestId: components["parameters"]["LeaveRequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file. */
+            200: {
+                headers: {
+                    /** @description `attachment`; filename is the stored name. */
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/jpeg": string;
+                    "application/pdf": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    uploadLeaveRequestAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                leaveRequestId: components["parameters"]["LeaveRequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Stored. Body is metadata, not the bytes. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaveAttachmentEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    deleteLeaveRequestAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                leaveRequestId: components["parameters"]["LeaveRequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getLeaveRequestPdf: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                leaveRequestId: components["parameters"]["LeaveRequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The PDF. */
+            200: {
+                headers: {
+                    /** @description `attachment`; filename `leave-request-{id}.pdf`. */
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
     listApprovals: {
         parameters: {
             query?: {
@@ -2040,6 +2691,37 @@ export interface operations {
             200: components["responses"]["LeaveRequestList"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listTeamCalendar: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Calendar rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TeamCalendarEntry"][];
+                        meta: Record<string, never>;
+                        links: Record<string, never>;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationFailed"];
             429: components["responses"]["TooManyRequests"];
@@ -2450,6 +3132,68 @@ export interface operations {
             429: components["responses"]["TooManyRequests"];
         };
     };
+    getUserAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The image. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/jpeg": string;
+                    "image/webp": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createEncashment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EncashmentCreate"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LedgerEntry"];
+                        meta: Record<string, never>;
+                        links: Record<string, never>;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["LeaveRuleViolation"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
     adminListUsers: {
         parameters: {
             query?: {
@@ -2774,6 +3518,211 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["DepartmentOk"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    putDepartmentLeaveQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                departmentId: components["parameters"]["DepartmentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DepartmentLeaveQuotaWrite"];
+            };
+        };
+        responses: {
+            /** @description Override saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentLeaveQuotaEnvelope"];
+                };
+            };
+            /** @description Override removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listLocations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All locations (not paginated). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Location"][];
+                        meta: Record<string, never>;
+                        links: Record<string, never>;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createLocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationWrite"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getLocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                locationId: components["parameters"]["LocationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The location. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    deleteLocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                locationId: components["parameters"]["LocationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    updateLocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                locationId: components["parameters"]["LocationId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationWrite"];
+            };
+        };
+        responses: {
+            /** @description Updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listAuditLogs: {
+        parameters: {
+            query?: {
+                /** @description 1-based page number. Above 10000 → 422 `VALIDATION_FAILED`. */
+                "page[number]"?: components["parameters"]["PageNumber"];
+                "page[size]"?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of audit rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogList"];
+                };
+            };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

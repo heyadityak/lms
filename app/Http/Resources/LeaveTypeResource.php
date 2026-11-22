@@ -28,6 +28,8 @@ final class LeaveTypeResource extends JsonResource
             'allow_half_day' => $this->allow_half_day,
             'max_backdate_days' => $this->max_backdate_days,
             'is_active' => $this->is_active,
+            'sandwich' => $this->sandwich,
+            'accrual_frequency' => $this->accrual_frequency->value,
         ];
     }
 

@@ -10,18 +10,32 @@ describe('navItems', () => {
         expect(keys(navItems({ role: 'employee', is_admin: false }, ALL))).toEqual([
             '/',
             '/leave-requests',
+            '/team-calendar',
             '/holidays',
         ]);
     });
 
-    it('adds approvals for managers', () => {
-        expect(keys(navItems({ role: 'manager', is_admin: false }, ALL))).toContain('/approvals');
+    it('adds approvals for managers and keeps delegation off the sider', () => {
+        const k = keys(navItems({ role: 'manager', is_admin: false }, ALL));
+        expect(k).toContain('/approvals');
+        expect(k).toContain('/team-calendar');
+        expect(k).not.toContain('/approvals/delegation');
+        expect(k).not.toContain('/admin/locations');
     });
 
     it('gives hr_admin the HR admin items but not the admin ones', () => {
         const k = keys(navItems({ role: 'hr_admin', is_admin: false }, ALL));
-        expect(k).toEqual(expect.arrayContaining(['/approvals', '/admin/users', '/admin/reports']));
+        expect(k).toEqual(
+            expect.arrayContaining([
+                '/approvals',
+                '/admin/users',
+                '/admin/locations',
+                '/admin/audit-logs',
+                '/admin/reports',
+            ]),
+        );
         expect(k).not.toContain('/admin/settings/branding');
+        expect(k).not.toContain('/approvals/delegation');
     });
 
     it('gives an employee with the additive admin role only the admin items', () => {

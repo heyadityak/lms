@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Users;
 
+use App\Actions\Audit\RecordAuditLog;
 use App\Actions\Leave\CancelLeaveRequest;
 use App\Enums\LeaveStatus;
 use App\Exceptions\InvalidTransition;
@@ -17,7 +18,7 @@ use Illuminate\Support\Facades\DB;
  */
 final class DeactivateUser
 {
-    public function __construct(private readonly CancelLeaveRequest $cancel) {}
+    public function __construct(private readonly CancelLeaveRequest $cancel, private readonly RecordAuditLog $audit) {}
 
     public function handle(User $user, User $actor): void
     {
@@ -27,6 +28,10 @@ final class DeactivateUser
                 throw new InvalidTransition('User is already inactive.');
             }
             $locked->forceFill(['is_active' => false])->save();
+            $this->audit->write($actor, 'user', $locked->public_id, 'updated', [
+                'before' => ['is_active' => true],
+                'after' => ['is_active' => false],
+            ]);
 
             foreach ($locked->leaveRequests()->where('status', LeaveStatus::Pending)->get() as $request) {
                 $this->cancel->handle($request, $actor, 'Cancelled automatically: user deactivated.');

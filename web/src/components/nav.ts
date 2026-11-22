@@ -23,6 +23,7 @@ const HR: Schemas['Role'][] = ['hr_admin'];
 const MAIN: Rule[] = [
     { key: '/', label: 'Dashboard' },
     { key: '/leave-requests', label: 'Leaves' },
+    { key: '/team-calendar', label: 'Team calendar' },
     { key: '/approvals', label: 'Approvals', roles: ['manager', 'hr_admin'] },
     { key: '/holidays', label: 'Holidays', module: 'holidays' },
 ];
@@ -30,9 +31,11 @@ const MAIN: Rule[] = [
 const ADMIN: Rule[] = [
     { key: '/admin/users', label: 'Users', roles: HR },
     { key: '/admin/departments', label: 'Departments', roles: HR },
+    { key: '/admin/locations', label: 'Locations', roles: HR },
     { key: '/admin/leave-types', label: 'Leave types', roles: HR },
     { key: '/admin/holidays', label: 'Holiday calendar', roles: HR, module: 'holidays' },
     { key: '/admin/reports', label: 'Reports', roles: HR, module: 'reports' },
+    { key: '/admin/audit-logs', label: 'Audit log', roles: HR },
     { key: '/admin/settings/working-week', label: 'Working week', roles: HR },
     { key: '/admin/settings/branding', label: 'Branding', admin: true },
     { key: '/admin/settings/modules', label: 'Modules', admin: true },

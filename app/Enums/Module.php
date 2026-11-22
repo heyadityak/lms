@@ -12,6 +12,5 @@ enum Module: string
     case Api = 'api';
     case Notifications = 'notifications';
     case UserManagement = 'user_management';
-    case MultiLevelApproval = 'multi_level_approval';
-    case Delegation = 'delegation';
+    case MultiLevel = 'multi_level';
 }

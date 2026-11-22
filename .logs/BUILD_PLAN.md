@@ -21,6 +21,7 @@ Small phases. Each phase: one agent run → verified (tests green in Docker) →
 | 15 | domain | **Admin API only:** branding PATCH/DELETE + asset upload/delete, modules list/patch (`api` may be disabled), working-week PATCH, Keycloak user management (guardrails, audit, compensation, 503 `IDP_UNAVAILABLE`). | done |
 | 16 | frontend | **Admin screens:** branding (ColorPicker, Upload, contrast warning, `revalidateTag('branding')`), modules (Switch, locked), identity users (list/create/edit/roles/enable/disable/password reset, 503 page). | done |
 | 17 | qa | **Full regression + e2e:** PHPUnit for phases 8, 11, 13, 15 (spec-validated); Playwright `web/e2e` (alice applies → bob approves → balance; module off → nav hidden + 404; branding name/colour/favicon; axe on every page) wired into the package smoke job; bug loop until green. | done |
+| 18 | domain | **Pending-approval reminder (UC-S4):** `lms:remind-pending-approvals` at 08:00 `APP_TIMEZONE` (`onOneServer` + `withoutOverlapping`). One queued mail per active `manager` or `hr_admin` who has an approvals-inbox pending request (`LeaveRequestQuery::approvableBy`). Idempotent per user per calendar date via `approval_reminders`. Sends only when `notifications` is enabled. No API, no new module, no env var. Happy-path feature test: one mail, and a second run the same day queues nothing. | done |
 
 Notes (D-43, 2026-11-19):
 - Phase 7 (qa) should not add tests for Blade/Socialite web routes: phase 8 deletes them.

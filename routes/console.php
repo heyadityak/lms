@@ -15,3 +15,9 @@ Schedule::command('lms:accrue-year')
     ->yearlyOn((int) config('lms.leave_year_start_month', 1), 1, '00:10')
     ->onOneServer()
     ->withoutOverlapping();
+
+// UC-S4: 08:00 in the scheduler default timezone (APP_TIMEZONE). Do not call timezone(). Redis locks cover N schedulers.
+Schedule::command('lms:remind-pending-approvals')
+    ->dailyAt('08:00')
+    ->onOneServer()
+    ->withoutOverlapping();

@@ -134,6 +134,13 @@ classDiagram
         +update() never
         +delete() never
     }
+    class ApprovalReminder {
+        <<Model>>
+        +int id
+        +int user_id
+        +CarbonImmutable reminded_on
+        +CarbonImmutable created_at
+    }
 
     class Role {
         <<enumeration>>
@@ -201,6 +208,7 @@ classDiagram
     User "0..1" -- "0..*" Setting : updated_by
     User "1" -- "0..*" UserAdminAudit : actor
     User "0..1" -- "0..*" UserAdminAudit : target
+    User "1" -- "0..*" ApprovalReminder : reminded_on
 
     User ..> Role
     LeaveRequest ..> LeaveStatus
@@ -292,6 +300,11 @@ classDiagram
         +approversFor(User requester) Collection
         +canDecide(User actor, LeaveRequest r) bool
     }
+    class LeaveRequestQuery {
+        <<Service>>
+        +visibleTo(User u) Builder
+        +approvableBy(User u) Builder
+    }
     class AccrualCalculator {
         <<Service (new), pure>>
         +prorate(float quota, int joinMonth, int startMonth)$ float
@@ -328,6 +341,22 @@ classDiagram
         <<Console command>>
         signature lms:accrue-year year?
         +handle(RunYearStartAccrual action) int
+    }
+    class RemindPendingApprovals {
+        <<Console command>>
+        signature lms:remind-pending-approvals
+        +handle(SendPendingApprovalReminders action) int
+    }
+    class SendPendingApprovalReminders {
+        <<Action>>
+        +handle() PendingApprovalReminderSummary
+    }
+    class PendingApprovalReminderSummary {
+        <<DTO>>
+        +string date
+        +int queued
+        +int nothingPending
+        +int alreadyReminded
     }
     class InvalidTransition {
         <<Exception>>
@@ -369,6 +398,9 @@ classDiagram
     RunYearStartAccrual --> LeaveYear
     RunYearStartAccrual --> AccrualSummary
     AccrueYear --> RunYearStartAccrual
+    RemindPendingApprovals --> SendPendingApprovalReminders
+    SendPendingApprovalReminders --> LeaveRequestQuery
+    SendPendingApprovalReminders --> Modules
     DeactivateUser --> CancelLeaveRequest
     WorkingDayCalculator --> Modules
     WorkingDayCalculator --> Settings : work.weekend_days
@@ -385,7 +417,7 @@ Notes:
 - Every action is `final`, has one public `handle()`, runs in `DB::transaction`, uses `lockForUpdate()` (`SubmitLeaveRequest` locks the requester's `users` row; approve/reject/cancel lock the `leave_requests` row), and dispatches notifications with `afterCommit()`.
 - `LeaveRequestValidator` (D-49) owns rules V1–V8. `SubmitLeaveRequest` calls `validate()` inside that user-row lock and still injects `ApproverResolver` to notify approvers. The validator constructor takes `WorkingDayCalculator`, `LeaveBalanceService` and `ApproverResolver`; `LeaveYear::of` and `LeaveYear::end` are static calls (`..>`). `ApproveLeaveRequest` calls only the static `assertNoOverlap()` (V6) and still injects `LeaveBalanceService` for the balance re-check. `POST /leave-requests/preview` calls `validate()` with no lock and no write.
 - Pure static helpers (`WorkingDayCalculator::count`, `AccrualCalculator`, `BrandColor`, `Modules::resolve`, `LeaveStatus::canTransitionTo`, `Role::fromKeycloakRoles`) are what the Unit suite tests without booting Laravel.
-- `AccrueYear` is scheduled with `onOneServer()->withoutOverlapping()` (Redis locks) on day 1 of `LEAVE_YEAR_START_MONTH`.
+- `AccrueYear` is scheduled with `onOneServer()->withoutOverlapping()` (Redis locks) on day 1 of `LEAVE_YEAR_START_MONTH` at 00:10. `RemindPendingApprovals` is scheduled the same way every day at 08:00 `APP_TIMEZONE` (UC-S4). A second mail the same day is stopped by unique `(user_id, reminded_on)` on `approval_reminders`, not by the Redis lock.
 
 ## 3. Identity: Keycloak login, JWT guard, user administration
 
@@ -649,6 +681,12 @@ classDiagram
         <<Notification ShouldQueue>>
         to other party
     }
+    class PendingApprovalsReminder {
+        <<Notification ShouldQueue>>
+        one per recipient per day
+        count frozen at queue time
+        link /approvals
+    }
     class Brand {
         <<DTO (new)>>
         +string name
@@ -680,6 +718,7 @@ classDiagram
     PublicBrandingController --> Brand
     LeaveRequestSubmitted ..> Brand : subject prefix
     LeaveRequestDecided ..> Brand
+    PendingApprovalsReminder ..> Brand : subject prefix
 ```
 
 Notes:
@@ -692,6 +731,8 @@ Notes:
 ## Class names the domain agent must adopt
 
 Already named in the docs: `User`, `Department`, `LeaveType`, `Holiday`, `LeaveRequest`, `LeaveRequestAction`, `LeaveLedgerEntry`, `Setting`; enums `Role`, `LeaveStatus`, `DayPart`, `LedgerKind`, `LeaveAction`, `Module`; `SubmitLeaveRequest`, `ApproveLeaveRequest`, `RejectLeaveRequest`, `CancelLeaveRequest`, `GrantInitialEntitlement`, `RunYearStartAccrual`, `DeactivateUser`, `WorkingDayCalculator`, `LeaveBalanceService`, `Settings`, `Modules`, `AccrueYear`, `InvalidTransition`, `EnsureModuleEnabled`, `EnsureUserIsActive`, `RequestId`, `HealthController`, `LeaveRequestPolicy`, `UserPolicy`, `DepartmentPolicy`, `LeaveTypePolicy`, `HolidayPolicy`, `SettingsPolicy`, `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled`.
+
+UC-S4 (phase 18): `ApprovalReminder` (`App\Models`), `SendPendingApprovalReminders` and `PendingApprovalReminderSummary` (`App\Actions\Leave`), `RemindPendingApprovals` (`App\Console\Commands`), `PendingApprovalsReminder` (`App\Notifications`). `LeaveRequestQuery::approvableBy` already exists and is the approvals inbox; the reminder calls it and does not add a second visibility rule.
 
 New (introduced by this run, D-20/D-21/D-22):
 

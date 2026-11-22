@@ -364,3 +364,24 @@ flowchart TB
 ```
 
 The last-admin count (active users with `is_admin`) uses the local mirror under a Redis lock so two concurrent demotions cannot both pass. Disable (UC-U4) applies the same G2/G3 checks. Drift with Keycloak (roles changed directly in the Keycloak console) is repaired at the user's next login by the provisioner.
+
+## 8. Daily pending-approval reminder (UC-S4)
+
+```mermaid
+flowchart TB
+    s([Every day at 08:00 APP_TIMEZONE<br/>or artisan lms:remind-pending-approvals]) --> lk{"Redis lock acquired?<br/>onOneServer + withoutOverlapping"}
+    lk -- "no: another replica runs it" --> stop([Skip this tick])
+    lk -- yes --> mod{"notifications module on?"}
+    mod -- no --> none([Exit 0. No rows. No mail])
+    mod -- yes --> u{"next active user<br/>base role manager or hr_admin<br/>ascending id"}
+    u -- none --> done([Exit 0])
+    u -- user --> c{"approvableBy count greater than 0?"}
+    c -- no --> u
+    c -- yes --> ins["insertOrIgnore approval_reminders<br/>for this user and today's date"]
+    ins --> hit{"row inserted?"}
+    hit -- "no: already reminded today" --> u
+    hit -- yes --> q["afterCommit queue PendingApprovalsReminder<br/>with that count"]
+    q --> u
+```
+
+Today is `now()->toDateString()` in `APP_TIMEZONE`. Count `0` writes no row, so a later run the same day can still mail that user. A committed row blocks a second job that day even if more requests arrive. The worker does not re-count.

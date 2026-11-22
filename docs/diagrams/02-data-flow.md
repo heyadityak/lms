@@ -27,8 +27,9 @@ Business rules come from [USE_CASES.md](../USE_CASES.md); tables from [SYSTEM_DE
 | D10 Branding assets | RustFS (S3-compatible), `BRANDING_DISK=s3` | `logo-{sha1}.{ext}`, `favicon-{sha1}.{ext}` | P9 |
 | D11 Web sessions | Postgres DB `lms_auth` (Better Auth, D-45), read/written only by `web`; browser holds only the signed session cookie + JWE cache | `session`, `account` (access, refresh, id token, expiries; encrypted), `verification` (OAuth state), `user` (Keycloak mirror) | P1 |
 | D12 Cache, locks, rate limits | Redis DB 1 | `settings:all`, `keycloak:jwks`, `keycloak:admin-token`, `idem:{user}:{key}`, schedule / guard locks, `throttle:*` | P1, P2, P6, P9, P11 |
-| D13 Queue | Redis DB 3 | `queues:default` (notification jobs) | P2, P3, P4 → read by P7 |
+| D13 Queue | Redis DB 3 | `queues:default` (notification jobs) | P2, P3, P4, P12 → read by P7 |
 | D14 User-admin audit | Postgres | `user_admin_audits` (append-only) | P11 |
+| D15 Approval reminders | Postgres | `approval_reminders` unique `(user_id, reminded_on)` | P12 |
 | Config (not a store) | env | `MODULES_ENABLED`, `APP_BRAND_NAME`, `BRAND_*`, `LMS_WEEKEND_DAYS`, `LEAVE_YEAR_START_MONTH`, `KEYCLOAK_*` | operator at deploy |
 
 ## Level 0: context
@@ -59,7 +60,7 @@ flowchart LR
     KC -->|ID / access tokens, JWKS,<br/>realm roles, admin API results| LMS
     LMS -->|auth redirects, code exchange,<br/>admin API writes: users, roles,<br/>enable, execute-actions email| KC
     OP -->|licensed modules, brand defaults,<br/>leave-year start, secrets| LMS
-    CLK -->|year-start trigger| LMS
+    CLK -->|year-start 00:10 and daily reminder 08:00| LMS
     LMS -->|leave notification mails| MAIL
 ```
 
@@ -152,6 +153,7 @@ flowchart LR
 
     P5((P5<br/>Balance ledger))
     P6((P6<br/>Year-start accrual<br/>+ carry-forward))
+    P12((P12<br/>Pending approval<br/>reminder))
     P8((P8<br/>Reports / CSV))
     P9((P9<br/>Branding, module +<br/>working-week settings))
     P10((P10<br/>Master data:<br/>depts, types,<br/>holidays, LMS user fields))
@@ -166,7 +168,9 @@ flowchart LR
     D8[[D8 settings]]
     D10[[D10 RustFS branding assets]]
     D12[[D12 Redis cache + locks]]
+    D13[[D13 Redis queue]]
     D14[[D14 user_admin_audits]]
+    D15[[D15 approval_reminders]]
 
     CLK -->|day 1 of LEAVE_YEAR_START_MONTH, 00:10| P6
     HR -->|lms:accrue-year YEAR one-off| P6
@@ -175,6 +179,14 @@ flowchart LR
     D3 -->|annual_quota, carry_forward_cap,<br/>max_balance| P6
     D7 -->|closing balance year−1| P6
     P6 -->|lapse, carry_forward, grant| P5
+
+    CLK -->|every day 08:00 APP_TIMEZONE| P12
+    P12 -->|onOneServer + withoutOverlapping lock| D12
+    D8 -->|notifications module on or off| P12
+    D1 -->|active manager and hr_admin| P12
+    D5 -->|pending rows in the approvals inbox| P12
+    P12 -->|one row per recipient per date| D15
+    P12 -->|PendingApprovalsReminder job| D13
     P5 -->|append| D7
 
     HR -->|dept, type, holiday CRUD,<br/>manager, joining date, deactivate,<br/>adjustment| P10
@@ -218,4 +230,5 @@ Notes:
 - P11 writes **Keycloak first**, then D1. If the D1 write fails after a create, P11 deletes the Keycloak user again (compensation) and records it in D14.
 - P9 never writes env. A module can be disabled only if it is licensed (D-14). `work.weekend_days` changes apply to new submissions only; stored `days` in D5 are never recalculated (D-30).
 - P11 reads Keycloak live; when Keycloak is down it answers 503 `IDP_UNAVAILABLE` and never serves D1 as a stale list (D-32).
-- `holidays` off ⇒ D4 is not read by P2 (D-17). `notifications` off ⇒ nothing is pushed to D13. `user_management` off ⇒ P11 does not exist; HR still edits LMS fields via P10.
+- `holidays` off ⇒ D4 is not read by P2 (D-17). `notifications` off ⇒ nothing is pushed to D13, and P12 writes no D15 rows. `user_management` off ⇒ P11 does not exist; HR still edits LMS fields via P10.
+- P12 mails only active `manager` and `hr_admin` users who have at least one pending request in the approvals inbox. The D15 unique key is what stops a second mail the same day. P7 sends the queued job with the UC-S2 mail views.

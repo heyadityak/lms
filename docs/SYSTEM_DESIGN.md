@@ -127,6 +127,7 @@ erDiagram
     users |o--o{ settings : updated_by
     users ||--o{ user_admin_audits : actor
     users |o--o{ user_admin_audits : target
+    users ||--o{ approval_reminders : reminded_on
 
     departments {
         bigint id PK
@@ -230,6 +231,12 @@ erDiagram
         varchar(64) request_id "nullable"
         timestamptz created_at "no updated_at"
     }
+    approval_reminders {
+        bigint id PK
+        bigint user_id FK "users.id, restrictOnDelete"
+        date reminded_on "APP_TIMEZONE calendar date"
+        timestamptz created_at "no updated_at, no public_id"
+    }
 ```
 
 ### Constraints & indexes (put these in migrations)
@@ -243,6 +250,7 @@ erDiagram
 | `leave_ledger_entries` | index `(user_id, leave_type_id, year)`. Partial unique `(user_id, leave_type_id, year, kind) WHERE kind IN ('grant','carry_forward','lapse')`. Partial unique `(leave_request_id, kind) WHERE leave_request_id IS NOT NULL`, so each request gets at most one debit and one reversal. |
 | `leave_request_actions` | index `(leave_request_id, created_at)` |
 | `holidays` | unique `(date)` |
+| `approval_reminders` | unique `(user_id, reminded_on)`. FK `user_id` → `users.id` RESTRICT (D-12). Not API-exposed: no `public_id`. UC-S4 idempotency row, one per recipient per calendar date. |
 
 Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cache_locks`, `jobs`, `job_batches` (unused with Redis, kept as a fallback driver, D-23), `failed_jobs` (used). **Not created** (D-20): `password_reset_tokens` (drop it from the stock users migration), `personal_access_tokens` (do not run `install:api` with Sanctum; create `routes/api.php` by hand). Keycloak keeps its own tables in the separate `keycloak` database.
 
@@ -273,8 +281,24 @@ Laravel framework tables (keep the stock migrations): `sessions`, `cache`, `cach
 | `App\Auth\JwksCache` | Fetches `{KEYCLOAK_BASE_URL}/realms/{realm}/protocol/openid-connect/certs` and caches it (`Cache::remember('keycloak:jwks', KEYCLOAK_JWKS_CACHE_TTL)` in Redis). On unknown `kid`, refetches once (key rotation), guarded by a Redis lock `keycloak:jwks-refresh` that is held for 10 s and never released, so bogus `kid`s cost Keycloak at most one call per 10 s (D-39). |
 | `App\Support\Settings` (**scoped** binding, `$this->app->scoped()`) | Key/value read with env fallback. Cached in Redis (§8). Scoped so Octane workers resolve settings per request (D-27). |
 | `App\Support\Modules` (scoped binding) | `enabled(Module $m): bool`, `all()` for the admin UI. |
-| `App\Notifications\*` | `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled` (no `AccountCreated`: Keycloak owns account mails, D-20). All `ShouldQueue`, mail channel. Sent only if `notifications` is enabled. |
-| `App\Console\Commands\AccrueYear` | `lms:accrue-year {year?}` → `RunYearStartAccrual`. Scheduled `yearlyOn(config('lms.leave_year_start_month'), 1, '00:10')->onOneServer()->withoutOverlapping()` (D-24, D-26). |
+| `App\Notifications\*` | `LeaveRequestSubmitted`, `LeaveRequestDecided`, `LeaveRequestCancelled`, `PendingApprovalsReminder` (no `AccountCreated`: Keycloak owns account mails, D-20). All `ShouldQueue`, mail channel. Queued only if `notifications` is enabled. `PendingApprovalsReminder` does not extend `LeaveRequestNotification`. |
+| `App\Models\ApprovalReminder` | `approval_reminders` row. Not API-exposed. Written only by `SendPendingApprovalReminders`. |
+| `App\Actions\Leave\SendPendingApprovalReminders` | UC-S4. `handle(): PendingApprovalReminderSummary`. Rules: USE_CASES §3.12. |
+| `App\Console\Commands\AccrueYear` | `lms:accrue-year {year?}` → `RunYearStartAccrual`. Schedule: §5.1 (D-24, D-26). |
+| `App\Console\Commands\RemindPendingApprovals` | `lms:remind-pending-approvals` (no arguments) → `SendPendingApprovalReminders`. Prints the summary and returns `SUCCESS`. Schedule: §5.1. |
+
+### 5.1 Scheduled tasks
+
+Registered in `routes/console.php`. Timezone is the scheduler default `config('app.timezone')` (`APP_TIMEZONE`). Do not call `->timezone()`. Clock times are fixed in the schedule, not env vars and not `settings` rows.
+
+| Command | Expression | Locks |
+|---|---|---|
+| `lms:accrue-year` | `yearlyOn((int) config('lms.leave_year_start_month', 1), 1, '00:10')` | `->onOneServer()->withoutOverlapping()` |
+| `lms:remind-pending-approvals` | `dailyAt('08:00')` | `->onOneServer()->withoutOverlapping()` |
+
+08:00 is UC-S4. The Redis locks stop overlapping scheduler replicas (D-24). They do not stop a second mail the same day: that is unique `(user_id, reminded_on)` on `approval_reminders` (USE_CASES §3.12). Accrual idempotency stays the partial unique ledger index (D-26).
+
+The reminder reuses the UC-S2 mail views (`mail.leave-request`, `mail.leave-request-text`). Subject prefix `[{brand name}]`, from-name the brand name, link `config('app.url')` + `/approvals`. One queued job per recipient who gets a new row that day. No HTTP route and no OpenAPI change.
 
 ## 6. HTTP surface
 
@@ -573,9 +597,9 @@ Mermaid diagrams (render on GitHub; SVG exports in `docs/diagrams/svg/`). Index:
 | Diagram | Link |
 |---|---|
 | System context, containers, deployment per customer, horizontal scaling | [01-system-design.md](diagrams/01-system-design.md) |
-| Data flow (DFD level 0 and 1, stores D1–D14) | [02-data-flow.md](diagrams/02-data-flow.md) |
+| Data flow (DFD level 0 and 1, stores D1–D15) | [02-data-flow.md](diagrams/02-data-flow.md) |
 | Class diagrams (models/enums, domain logic, identity, HTTP) + class names to adopt | [03-class-diagram.md](diagrams/03-class-diagram.md) |
 | Object diagram (snapshot with balances) | [04-object-diagram.md](diagrams/04-object-diagram.md) |
-| Activity diagrams (apply, approve/reject, cancel, accrual, settings, first login, role guardrails) | [05-activity-diagrams.md](diagrams/05-activity-diagrams.md) |
-| Sequence diagrams (OIDC login/logout via Next BFF, API JWT, leave flows, accrual, readiness, branding, API errors + idempotency, user creation + compensation) | [06-sequence-diagrams.md](diagrams/06-sequence-diagrams.md) |
+| Activity diagrams (apply, approve/reject, cancel, accrual, settings, first login, role guardrails, pending reminder) | [05-activity-diagrams.md](diagrams/05-activity-diagrams.md) |
+| Sequence diagrams (OIDC login/logout via Next BFF, API JWT, leave flows, accrual, pending reminder, readiness, branding, API errors + idempotency, user creation + compensation) | [06-sequence-diagrams.md](diagrams/06-sequence-diagrams.md) |
 | Leave request state machine | [07-state-diagram.md](diagrams/07-state-diagram.md) |

@@ -200,7 +200,7 @@ flowchart TB
 | web (Next.js + BFF) | N (CPU / SSR latency) | Sessions, OAuth state, tokens and auth rate limits in Postgres `lms_auth` (Better Auth, D-45), 5-min JWE cookie cache readable by any replica (shared `BETTER_AUTH_SECRET`); per-replica fetch cache holds only public branding (≤ 30 s). |
 | app (FrankenPHP + Octane) | N (CPU / latency); `OCTANE_WORKERS` per replica, recycled after `OCTANE_MAX_REQUESTS` | Bearer-only (no sessions); cache, JWKS, admin token, idempotency keys in Redis; uploads on RustFS. `Settings` cache invalidated in Redis, so every replica sees changes on the next request. |
 | worker | N (queue depth) | Redis queue pop is atomic. SIGTERM finishes the current job. |
-| scheduler | 1 (extra replicas harmless) | `onOneServer()` takes a Redis atomic lock per run; `withoutOverlapping()` stops a long accrual overlapping itself. Accrual is idempotent anyway (unique ledger index). |
+| scheduler | 1 (extra replicas harmless) | `onOneServer()` takes a Redis atomic lock per run; `withoutOverlapping()` stops a long run overlapping itself. Accrual is idempotent via the yearly ledger unique index. The 08:00 pending-approval reminder is idempotent via unique `(user_id, reminded_on)` on `approval_reminders`. |
 | keycloak | N | Clustered (Infinispan) with shared `keycloak` DB. The app keeps validating JWTs from the Redis-cached JWKS during short Keycloak outages. |
 | migrations | one-off | Never in the web entrypoint, so N replicas don't race. Expand/contract for breaking changes. |
 | Postgres / Redis / RustFS | managed | Outside the app's scaling unit. |

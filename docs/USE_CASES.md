@@ -111,7 +111,7 @@ Each deployment is customised per customer. **Env sets defaults and the licensed
 | UC-S1 | Year-start accrual: lapse/carry-forward previous year, grant annual quota (idempotent) | MVP |
 | UC-S2 | Send queued email notifications (submitted, approved, rejected, cancelled) | MVP |
 | UC-S3 | Health/readiness endpoints for orchestration | MVP |
-| UC-S4 | Daily reminder to managers about pending requests | Later |
+| UC-S4 | Daily reminder to managers about pending requests | MVP |
 
 ## 3. Business rules
 
@@ -229,7 +229,7 @@ Every transition writes one `leave_request_actions` row: actor, from, to, commen
 | `holidays` | yes | Holiday CRUD + calendar view, holiday exclusion in day count | Routes 404. Menu hidden. `WorkingDayCalculator` ignores the holidays table (weekends only). Rows are kept. | MVP |
 | `reports` | yes | UC-H7, UC-H8 | Routes 404, menu hidden | MVP |
 | `api` | yes | **Third-party** access to `/api/v1/*` and `/api/docs` (D-43) | 404 `application/problem+json` for third-party tokens (`lms-api-cli`) and `/api/docs`. The web frontend keeps working (its BFF token `azp` = `lms-web` is always served), and `GET /api/v1/branding` stays public. | MVP |
-| `notifications` | yes | UC-S2 leave emails (submitted/decided/cancelled) | Not dispatched. (Password and account mails are Keycloak's, unaffected.) | MVP |
+| `notifications` | yes | UC-S2 leave emails (submitted/decided/cancelled) and the UC-S4 daily pending-approval reminder | Not dispatched. A reminder run while the module is off writes no `approval_reminders` rows. (Password and account mails are Keycloak's, unaffected.) | MVP |
 | `user_management` | yes (SMB); **leave it out for directory-backed realms** (LDAP/AD/Entra, D-34) | UC-U1–U7 (identity admin via Keycloak Admin API) | Routes 404, menu hidden. Users are managed in Keycloak / the customer's directory; HR still edits LMS fields (UC-H2). `admin` keeps branding/modules. | MVP |
 | `multi_level_approval` | no | UC-M6 | Single-level only | Later (key reserved, registry entry `available=false`) |
 | `delegation` | no | UC-M5 | — | Later (key reserved) |
@@ -262,6 +262,52 @@ Effective state: `enabled(m) = m ∈ MODULES_ENABLED (env, licensed) AND m ∉ s
 | G5 | Federated users (`federationLink` set): profile fields and password reset are read-only; a role change is attempted and refused if the provider rejects it. | 422 `IDP_READ_ONLY` |
 | G6 | Duplicate username/email in Keycloak. | 409 `IDP_CONFLICT` |
 | G7 | Keycloak unreachable, timeout or 5xx. Nothing is written locally. | 503 `IDP_UNAVAILABLE` |
+
+### 3.12 Daily pending-approval reminder (UC-S4)
+
+One mail per recipient per calendar date, listing nothing but a count and a link to the approvals inbox. No new module key, no new HTTP endpoint, no admin setting, and no env var: the clock time is fixed.
+
+**Schedule.** `lms:remind-pending-approvals` (no arguments) in `routes/console.php`:
+
+```php
+Schedule::command('lms:remind-pending-approvals')
+    ->dailyAt('08:00')
+    ->onOneServer()
+    ->withoutOverlapping();
+```
+
+`dailyAt('08:00')` uses the scheduler default timezone, `config('app.timezone')`, which is `APP_TIMEZONE`. Do not call `->timezone()`. 08:00 is the same kind of fixed clock time as the accrual job's 00:10 (D-26). `onOneServer()` + `withoutOverlapping()` are the Redis locks from D-24; they stop two schedulers running the command at once. They are not the per-manager idempotency rule below. A manual `php artisan lms:remind-pending-approvals` runs the same action against the same rule. The command takes no date argument. The date is always today: `now()->toDateString()` in `APP_TIMEZONE` (§3.9). Exit code is `SUCCESS` whether or not any mail was queued.
+
+**Module.** At the start of the action, if `notifications` is off, return immediately: no user scan, no `approval_reminders` rows, no jobs. Turning the module on later the same day and running the command again sends the mails that were skipped. A job already on the queue is still delivered if the module is switched off after it was queued (same as UC-S2, which checks the module at dispatch, not at send).
+
+**Who.** Active users whose base role is `manager` or `hr_admin`, in ascending `users.id` order. `users.is_active = false` is skipped. Base role `employee` is skipped, including an employee who is someone's `manager_id` and including an employee with additive `admin`. `users.is_admin` does not add or remove a recipient. For each candidate, the pending set is `LeaveRequestQuery::approvableBy($user)` with no further filter. That is the approvals inbox (`GET /approvals`): status `pending`, never the recipient's own request; an `hr_admin` sees every other user's pending request; a `manager` sees pending requests whose requester has `manager_id` equal to this user. A base role is exclusive, so an `hr_admin` is counted once, with the `hr_admin` inbox, not again as a manager of their own reports.
+
+Count is the number of those `leave_requests` rows (one request counts as one, including a half-day). Count `0` means no mail and no `approval_reminders` row, so a later run the same day can still mail them if a request arrives. Count `> 0` means one mail for the whole set, not one mail per request. The same request may appear in a manager's count and in every other `hr_admin`'s count. Each of those people gets their own mail. Do not dedupe across recipients.
+
+**Idempotency.** Table `approval_reminders`: `id`, `user_id` (FK `users.id`, `restrictOnDelete`), `reminded_on` (`date`, the `APP_TIMEZONE` calendar date), `created_at`. No `updated_at`, no `public_id` (not API-exposed). Unique `(user_id, reminded_on)`.
+
+For each candidate with count `> 0`, one transaction:
+
+1. `insertOrIgnore` one row `(user_id, reminded_on = today, created_at = now())`.
+2. If that inserted one row, `$user->notify(new PendingApprovalsReminder($count))` with `afterCommit()`, then commit.
+3. If it inserted nothing, this user already has a row for today: commit without a notification.
+
+A second run on the same `APP_TIMEZONE` date does not queue a second job for that user, including when more pending requests appeared after the first mail, when the queued job has not run yet, and when the queue later retries that same job. Queue retries are the one job Laravel already queued (UC-S2), not a new reminder. If the transaction rolls back, the row is gone and no job was queued, so a later run the same day may send. If the job exhausts its retries, the row stays and the command does not queue a replacement that day. The next calendar date is a new `reminded_on` and may send again while the inbox is still non-empty.
+
+The integer stored on the notification is the count taken in this run. The worker does not re-query the inbox.
+
+**Mail.** `App\Notifications\PendingApprovalsReminder` is `ShouldQueue` on the default connection, mail channel only. It does not extend `LeaveRequestNotification` (that type is one `LeaveRequest`). `toMail` matches that class: from-address `config('mail.from.address')`, from-name the brand name, views `mail.leave-request` and `mail.leave-request-text`, brand resolved when the worker renders (`Brand::fromSettings`), subject `[{brand name}] {subject}`.
+
+| Pending count | `subject` (brand prefix added by `toMail`) | Body line |
+|---|---|---|
+| 1 | `1 leave request awaiting your decision` | `1 leave request is waiting in your approvals inbox.` |
+| n > 1 | `{n} leave requests awaiting your decision` | `{n} leave requests are waiting in your approvals inbox.` |
+
+Action label `Open approvals`. Path `/approvals` with no query string. URL is `rtrim(config('app.url'), '/')` + `/approvals`. No request ids, names, or dates in the body.
+
+**Classes.** `App\Console\Commands\RemindPendingApprovals` is a thin command, same shape as `AccrueYear`. It calls `App\Actions\Leave\SendPendingApprovalReminders::handle(): PendingApprovalReminderSummary` and prints one line with the date, `queued`, `nothingPending`, and `alreadyReminded`. The summary counts only a run where the module is on: `queued` = rows inserted this run, `nothingPending` = candidates with count 0, `alreadyReminded` = candidates with count > 0 whose insert did nothing. Module off returns a zero summary and prints that the module is off.
+
+**Minimum feature test.** One pending request from a direct report queues one `PendingApprovalsReminder` to that manager (and one to an `hr_admin`, whose inbox includes it) and writes one `approval_reminders` row each. A second invocation the same day queues nothing more. An employee recipient is not mailed. `Schedule` exposes the command at 08:00 with `onOneServer` and `withoutOverlapping`.
 
 ## 4. Mapping from the original college project
 

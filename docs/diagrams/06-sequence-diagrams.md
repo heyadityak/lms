@@ -267,6 +267,49 @@ sequenceDiagram
     Note over J,DB: A re-run (manual one-off or retry) writes 0 rows: partial unique index (user, type, year, kind).
 ```
 
+## 7a. Daily pending-approval reminder (UC-S4)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S1 as Scheduler replica 1
+    participant S2 as Scheduler replica 2
+    participant R as Redis cache DB 1 locks
+    participant J as RemindPendingApprovals
+    participant DB as Postgres
+    participant Q as Redis queue
+
+    Note over S1,S2: Every day at 08:00 APP_TIMEZONE
+    S1->>R: onOneServer lock
+    S2->>R: onOneServer lock
+    R-->>S1: acquired
+    R-->>S2: not acquired, skip
+    S1->>R: withoutOverlapping mutex
+    S1->>J: lms:remind-pending-approvals
+    alt notifications module off
+        J-->>S1: queued 0, no rows written
+    else module on
+        loop each active manager or hr_admin, ascending users.id
+            J->>DB: count LeaveRequestQuery approvableBy
+            alt count is 0
+                Note over J,DB: no row, a later run today can still mail them
+            else count greater than 0
+                J->>DB: BEGIN
+                J->>DB: INSERT approval_reminders ON CONFLICT DO NOTHING
+                alt one row inserted
+                    J->>DB: COMMIT
+                    J->>Q: afterCommit PendingApprovalsReminder with that count
+                else already reminded today
+                    J->>DB: COMMIT
+                end
+            end
+        end
+    end
+    S1->>R: release locks
+```
+
+The lock only stops two schedulers at once. The unique `(user_id, reminded_on)` stops the second mail. Queue retries deliver the same job. They do not insert another row.
+
 ## 8. Readiness check `/readyz`
 
 ```mermaid

@@ -92,7 +92,14 @@ export function ApprovalsView() {
             sortOrder: table.sortOrder('start_date'),
         },
         { title: 'To', key: 'to', dataIndex: 'end_date', render: fmtDate },
-        { title: 'Days', key: 'days', dataIndex: 'days', align: 'right', sorter: true, sortOrder: table.sortOrder('days') },
+        {
+            title: 'Days',
+            key: 'days',
+            dataIndex: 'days',
+            align: 'right',
+            sorter: true,
+            sortOrder: table.sortOrder('days'),
+        },
         { title: 'Reason', key: 'reason', dataIndex: 'reason', ellipsis: true },
         {
             title: 'Applied',

@@ -19,7 +19,9 @@ export function useTableQuery(defaultSort: Sort, defaultSize = 10) {
         const s = Array.isArray(sorter) ? sorter[0] : sorter;
         const field = s?.columnKey as SortField | undefined;
         const next: Sort =
-            field && s.order ? ((s.order === 'descend' ? `-${field}` : field) as Sort) : defaultSort;
+            field && s.order
+                ? ((s.order === 'descend' ? `-${field}` : field) as Sort)
+                : defaultSort;
         if (next !== sort) {
             setSort(next);
             setPage(1);
@@ -37,14 +39,36 @@ export function useTableQuery(defaultSort: Sort, defaultSize = 10) {
         onChange,
         sortOrder,
         resetPage: () => setPage(1),
-        pagination: (total: number | undefined): TableProps['pagination'] => ({
-            current: page,
-            pageSize: size,
-            total,
-            showSizeChanger: true,
-            pageSizeOptions: [10, 25, 50],
-            showTotal: (t, [a, b]) => `${a}–${b} of ${t}`,
-            placement: ['bottomEnd'],
-        }),
+        pagination: (total: number | undefined): TableProps['pagination'] =>
+            pageOf(page, size, total),
+    };
+}
+
+/** Page state for tables whose sort is not the leave-request enum. */
+export function usePager(defaultSize = 10) {
+    const [page, setPage] = useState(1);
+    const [size, setSize] = useState(defaultSize);
+    return {
+        page,
+        size,
+        reset: () => setPage(1),
+        apply: (current?: number, pageSize?: number) => {
+            setPage(current ?? 1);
+            if (pageSize && pageSize !== size) setSize(pageSize);
+        },
+        pagination: (total: number | undefined): TableProps['pagination'] =>
+            pageOf(page, size, total),
+    };
+}
+
+function pageOf(page: number, size: number, total: number | undefined): TableProps['pagination'] {
+    return {
+        current: page,
+        pageSize: size,
+        total,
+        showSizeChanger: true,
+        pageSizeOptions: [10, 25, 50],
+        showTotal: (t, [a, b]) => `${a}–${b} of ${t}`,
+        placement: ['bottomEnd'],
     };
 }

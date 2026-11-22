@@ -23,9 +23,21 @@ final class Settings
 
     public function get(string $key): mixed
     {
-        $this->overrides ??= Cache::rememberForever(self::CACHE_KEY, fn (): array => Setting::query()->pluck('value', 'key')->all());
+        $overrides = $this->load();
 
-        return array_key_exists($key, $this->overrides) ? $this->overrides[$key] : self::default($key);
+        return array_key_exists($key, $overrides) ? $overrides[$key] : self::default($key);
+    }
+
+    /** True when a DB row overrides the env default (D-14). */
+    public function isOverridden(string $key): bool
+    {
+        return array_key_exists($key, $this->load());
+    }
+
+    /** @return array<string, mixed> */
+    private function load(): array
+    {
+        return $this->overrides ??= Cache::rememberForever(self::CACHE_KEY, fn (): array => Setting::query()->pluck('value', 'key')->all());
     }
 
     public function set(string $key, mixed $value, ?User $actor = null): void

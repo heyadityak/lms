@@ -1,6 +1,15 @@
 import dayjs from 'dayjs';
 import type { Schemas } from '@/lib/api/client';
 
+/**
+ * ISO weekend while `GET /settings/working-week` is loading or has failed.
+ * Matches the `LMS_WEEKEND_DAYS` default (Saturday, Sunday).
+ */
+export const DEFAULT_WEEKEND_DAYS: readonly number[] = [6, 7];
+
+/** Dashboard Team Time Off window, starting today, inclusive. */
+export const TEAM_TIME_OFF_DAYS = 14;
+
 export interface DayOff {
     date: string;
     people: { id: string; name: string; status: Schemas['LeaveStatus'] }[];

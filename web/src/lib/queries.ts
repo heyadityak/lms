@@ -15,14 +15,50 @@ export const useLeaveTypes = () =>
         staleTime: 300_000,
     });
 
-export const useHolidays = (enabled: boolean) =>
+/** `year` omitted → the API's current leave year. */
+export const useHolidays = (enabled: boolean, year?: number) =>
     useQuery({
-        queryKey: ['holidays'],
-        queryFn: async () => (await unwrap(api.GET('/holidays'))).data,
+        queryKey: ['holidays', year ?? null],
+        queryFn: async () =>
+            (
+                await unwrap(
+                    api.GET('/holidays', {
+                        params: { query: year === undefined ? {} : { 'filter[year]': year } },
+                    }),
+                )
+            ).data,
         enabled,
         staleTime: 300_000,
     });
 
+export const useDepartments = () =>
+    useQuery({
+        queryKey: ['departments'],
+        queryFn: async () => (await unwrap(api.GET('/departments'))).data,
+        staleTime: 60_000,
+    });
+
+/** Active and inactive types (hr_admin). `useLeaveTypes` stays the active list. */
+export const useAllLeaveTypes = () =>
+    useQuery({
+        queryKey: ['leave-types', 'all'],
+        queryFn: async () => {
+            const [active, inactive] = await Promise.all([
+                unwrap(
+                    api.GET('/leave-types', { params: { query: { 'filter[is_active]': true } } }),
+                ),
+                unwrap(
+                    api.GET('/leave-types', { params: { query: { 'filter[is_active]': false } } }),
+                ),
+            ]);
+            const byId = new Map<string, (typeof active.data)[number]>();
+            for (const row of [...active.data, ...inactive.data]) byId.set(row.id, row);
+            return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+        },
+        staleTime: 60_000,
+    });
+
+/** Effective weekend (UC-H16). Team Time Off uses `weekend_days` once this succeeds. */
 export const useWorkingWeek = (enabled = true) =>
     useQuery({
         queryKey: ['working-week'],

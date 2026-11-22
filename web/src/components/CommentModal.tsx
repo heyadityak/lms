@@ -23,7 +23,12 @@ export function CommentModal({
     const [busy, setBusy] = useState(false);
 
     const onOk = async () => {
-        const { comment } = await form.validateFields();
+        let comment: string | undefined;
+        try {
+            ({ comment } = await form.validateFields());
+        } catch {
+            return; // the field already shows the message
+        }
         setBusy(true);
         try {
             await onSubmit(comment?.trim() || null);
@@ -50,7 +55,11 @@ export function CommentModal({
                     rules={
                         required
                             ? [
-                                  { required: true, whitespace: true, message: 'A comment is required' },
+                                  {
+                                      required: true,
+                                      whitespace: true,
+                                      message: 'A comment is required',
+                                  },
                                   { min: 3, message: 'At least 3 characters' },
                               ]
                             : []

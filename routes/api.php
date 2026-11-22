@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use App\Enums\Module;
+use App\Http\Controllers\Api\V1\Admin\AdminUserController;
 use App\Http\Controllers\Api\V1\ApprovalController;
 use App\Http\Controllers\Api\V1\BrandingController;
 use App\Http\Controllers\Api\V1\DepartmentController;
@@ -10,8 +12,11 @@ use App\Http\Controllers\Api\V1\LeaveRequestController;
 use App\Http\Controllers\Api\V1\LeaveTypeController;
 use App\Http\Controllers\Api\V1\LedgerEntryController;
 use App\Http\Controllers\Api\V1\MeController;
+use App\Http\Controllers\Api\V1\ModuleController;
+use App\Http\Controllers\Api\V1\PublicBrandingController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\UserController;
+use App\Http\Controllers\Api\V1\WorkingWeekController;
 use App\Http\Controllers\ApiDocsController;
 use Illuminate\Support\Facades\Route;
 
@@ -22,10 +27,10 @@ Route::middleware('module:api')->group(function (): void {
 });
 
 // Public branding for the Next.js theme and nav (D-43): no auth, no `module:api`, per-IP limiter `public`.
-Route::get('/v1/branding', [BrandingController::class, 'show'])->middleware('throttle:public')->name('api.v1.branding');
+Route::get('/v1/branding', [PublicBrandingController::class, 'show'])->middleware('throttle:public')->name('api.v1.branding');
 
 // /api/v1: module gate (404; the first-party BFF passes, D-43) → Keycloak Bearer JWT (401, D-20) → `active` (401) → Redis rate limit (X-RateLimit-*, 429).
-// `idempotent` on POST /leave-requests (not /preview, D-43) (+ POST /admin/users in phase 9) only.
+// `idempotent` on POST /leave-requests (not /preview, D-43) and POST /admin/users.
 Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-jwt', 'active', 'throttle:api'])->group(function (): void {
     Route::get('/me', [MeController::class, 'show'])->name('me');
     Route::get('/me/balances', [MeController::class, 'balances'])->name('me.balances');
@@ -75,4 +80,31 @@ Route::prefix('v1')->name('api.v1.')->middleware(['module:api', 'auth:keycloak-j
     Route::post('/leave-requests/{leaveRequest}/cancel', [LeaveRequestController::class, 'cancel'])->name('leave-requests.cancel');
 
     Route::get('/approvals', [ApprovalController::class, 'index'])->name('approvals');
+
+    // Working week (UC-H16): GET any role, PATCH hr_admin. Does not rewrite stored leave days (D-30).
+    Route::get('/settings/working-week', [WorkingWeekController::class, 'show'])->name('settings.working-week.show');
+    Route::patch('/settings/working-week', [WorkingWeekController::class, 'update'])->name('settings.working-week.update');
+
+    // Branding (UC-B1–B4, UC-B6): GET any role, writes role `admin`.
+    Route::get('/settings/branding', [BrandingController::class, 'show'])->name('settings.branding.show');
+    Route::patch('/settings/branding', [BrandingController::class, 'update'])->name('settings.branding.update');
+    Route::delete('/settings/branding', [BrandingController::class, 'reset'])->name('settings.branding.reset');
+    Route::put('/settings/branding/assets/{asset}', [BrandingController::class, 'upload'])->whereIn('asset', ['logo', 'favicon'])->name('settings.branding.assets.update');
+    Route::delete('/settings/branding/assets/{asset}', [BrandingController::class, 'destroy'])->whereIn('asset', ['logo', 'favicon'])->name('settings.branding.assets.destroy');
+
+    // Modules (UC-B5): role `admin`. `api` may be disabled; the BFF bypass stays in EnsureModuleEnabled.
+    Route::get('/modules', [ModuleController::class, 'index'])->name('modules.index');
+    Route::patch('/modules/{module}', [ModuleController::class, 'update'])->whereIn('module', array_map(fn (Module $module): string => $module->value, Module::cases()))->name('modules.update');
+
+    // Identity admin (UC-U1–U6). 404 when `user_management` is off. No local fallback when Keycloak is down (D-32).
+    Route::middleware(['module:user_management', 'admin'])->group(function (): void {
+        Route::get('/admin/users', [AdminUserController::class, 'index'])->name('admin.users.index');
+        Route::post('/admin/users', [AdminUserController::class, 'store'])->middleware('idempotent')->name('admin.users.store');
+        Route::get('/admin/users/{user}', [AdminUserController::class, 'show'])->name('admin.users.show');
+        Route::patch('/admin/users/{user}', [AdminUserController::class, 'update'])->name('admin.users.update');
+        Route::post('/admin/users/{user}/enable', [AdminUserController::class, 'enable'])->name('admin.users.enable');
+        Route::post('/admin/users/{user}/disable', [AdminUserController::class, 'disable'])->name('admin.users.disable');
+        Route::put('/admin/users/{user}/roles', [AdminUserController::class, 'roles'])->name('admin.users.roles');
+        Route::post('/admin/users/{user}/password-reset', [AdminUserController::class, 'passwordReset'])->name('admin.users.password-reset');
+    });
 });

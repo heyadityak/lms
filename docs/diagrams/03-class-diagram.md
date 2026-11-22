@@ -270,6 +270,11 @@ classDiagram
         +handle(?array weekendIsoDays, User actor) void
     }
 
+    class LeaveRequestValidator {
+        <<Service>>
+        +validate(User user, array data) array
+        +assertNoOverlap(User user, start, end, ?int exceptRequestId)$ void
+    }
     class WorkingDayCalculator {
         <<Service>>
         +count(start, end, DayPart part, array weekendIsoDays, array holidayDates)$ float
@@ -342,13 +347,17 @@ classDiagram
         +int rowsSkipped
     }
 
-    SubmitLeaveRequest --> WorkingDayCalculator
-    SubmitLeaveRequest --> LeaveBalanceService
+    SubmitLeaveRequest --> LeaveRequestValidator
     SubmitLeaveRequest --> ApproverResolver
-    SubmitLeaveRequest --> LeaveYear
     SubmitLeaveRequest ..> LeaveRuleViolation : throws
+    LeaveRequestValidator --> WorkingDayCalculator
+    LeaveRequestValidator --> LeaveBalanceService
+    LeaveRequestValidator --> ApproverResolver
+    LeaveRequestValidator ..> LeaveYear : of, end
+    LeaveRequestValidator ..> LeaveRuleViolation : throws
     ApproveLeaveRequest --> LeaveBalanceService
     ApproveLeaveRequest --> ApproverResolver
+    ApproveLeaveRequest ..> LeaveRequestValidator : assertNoOverlap
     ApproveLeaveRequest ..> InvalidTransition : throws
     ApproveLeaveRequest ..> LeaveRuleViolation : throws
     RejectLeaveRequest ..> InvalidTransition : throws
@@ -374,6 +383,7 @@ classDiagram
 
 Notes:
 - Every action is `final`, has one public `handle()`, runs in `DB::transaction`, uses `lockForUpdate()` (`SubmitLeaveRequest` locks the requester's `users` row; approve/reject/cancel lock the `leave_requests` row), and dispatches notifications with `afterCommit()`.
+- `LeaveRequestValidator` (D-49) owns rules V1–V8. `SubmitLeaveRequest` calls `validate()` inside that user-row lock and still injects `ApproverResolver` to notify approvers. The validator constructor takes `WorkingDayCalculator`, `LeaveBalanceService` and `ApproverResolver`; `LeaveYear::of` and `LeaveYear::end` are static calls (`..>`). `ApproveLeaveRequest` calls only the static `assertNoOverlap()` (V6) and still injects `LeaveBalanceService` for the balance re-check. `POST /leave-requests/preview` calls `validate()` with no lock and no write.
 - Pure static helpers (`WorkingDayCalculator::count`, `AccrualCalculator`, `BrandColor`, `Modules::resolve`, `LeaveStatus::canTransitionTo`, `Role::fromKeycloakRoles`) are what the Unit suite tests without booting Laravel.
 - `AccrueYear` is scheduled with `onOneServer()->withoutOverlapping()` (Redis locks) on day 1 of `LEAVE_YEAR_START_MONTH`.
 
@@ -507,6 +517,7 @@ classDiagram
         <<Api V1>>
         +index()
         +store(StoreLeaveRequestRequest r, SubmitLeaveRequest a)
+        +preview(StoreLeaveRequestRequest r, LeaveRequestValidator v)
         +show(LeaveRequest lr)
         +cancel(CancelLeaveRequestRequest r, LeaveRequest lr, CancelLeaveRequest a)
     }
@@ -673,6 +684,7 @@ classDiagram
 
 Notes:
 - Laravel is API-only (D-43): controllers live in `App\Http\Controllers\Api\V1\…` (JSON Resources `LeaveRequestResource`, `UserResource`, `IdentityUserResource`, `BalanceResource`, `LedgerEntryResource`, …) and call the Actions. Pages are in the Next.js frontend (`web/`), which reaches these controllers through its BFF.
+- `LeaveRequestController::preview` reuses `StoreLeaveRequestRequest` (same `create` policy and V9 shape as `store`) and `LeaveRequestValidator`. It is not behind `EnsureIdempotency` (D-49).
 - Admin CRUD controllers for departments, leave types, holidays, adjustments and reports follow the same pattern and are omitted; so are `DepartmentPolicy`, `LeaveTypePolicy`, `HolidayPolicy` (all `hr_admin` for writes).
 - Errors for `api/*` are rendered as `application/problem+json` in `bootstrap/app.php` `withExceptions()`, mapping `InvalidTransition`, `LeaveRuleViolation`, `Idp*` and framework exceptions to the codes in [API_GUIDELINES.md](../API_GUIDELINES.md) §4.
 - No `AccountCreated` notification and no token controller: Keycloak handles account mails and tokens (D-20).
@@ -699,6 +711,7 @@ New (introduced by this run, D-20/D-21/D-22):
 | `UpdateBranding`, `ResetBranding`, `UpdateModules` | `App\Actions\Settings` | UC-B1–B6 |
 | `UpdateWorkingWeek`, `WorkingWeekController`, `UpdateWorkingWeekRequest` | `App\Actions\Settings`, controllers, `App\Http\Requests` | UC-H16 weekend override (D-30) |
 | `ApproverResolver`, `AccrualCalculator` | `App\Services` | Approver resolution; pure accrual maths |
+| `LeaveRequestValidator` | `App\Services` | V1–V8 `validate()` plus static `assertNoOverlap()` (D-49), shared by submit, approve and preview |
 | `AccrualSummary` | `App\Actions\Accrual` | Return value of `RunYearStartAccrual` |
 | `LeaveYear`, `BrandColor`, `Brand` | `App\Support` | Leave-year maths (`LEAVE_YEAR_START_MONTH`), hex/contrast, brand DTO (public branding + mail) |
 | `LeaveRequestController`, `ApprovalController`, `BrandingController`, `ModuleController`, `PublicBrandingController` | `App\Http\Controllers\Api\V1` | Controllers (D-43: no Web controllers) |

@@ -46,9 +46,27 @@ export const fmtDays = (n: number) => `${n} ${n === 1 ? 'day' : 'days'}`;
 
 export const isApprover = (role: Schemas['Role']) => role === 'manager' || role === 'hr_admin';
 
+export const ROLE_LABEL: Record<Schemas['Role'], string> = {
+    employee: 'Employee',
+    manager: 'Manager',
+    hr_admin: 'HR admin',
+};
+
+/** Status text is the label; colour is extra (WCAG, not colour alone). */
+export function ActiveTag({ active }: { active: boolean }) {
+    const tone = TONES[active ? 'success' : 'neutral'];
+    return (
+        <Tag variant="filled" style={{ ...tone, minWidth: 88, textAlign: 'center' }}>
+            {active ? 'Active' : 'Inactive'}
+        </Tag>
+    );
+}
+
 export function initials(name: string): string {
     const parts = name.trim().split(/\s+/).filter(Boolean);
-    return ((parts[0]?.[0] ?? '') + (parts.length > 1 ? (parts.at(-1)?.[0] ?? '') : '')).toUpperCase();
+    return (
+        (parts[0]?.[0] ?? '') + (parts.length > 1 ? (parts.at(-1)?.[0] ?? '') : '')
+    ).toUpperCase();
 }
 
 /** Initials avatar (no Figma photos: license unresolved). */
@@ -63,14 +81,15 @@ export function InitialsAvatar({
 }) {
     return (
         <Tooltip title={label}>
-            <Avatar
-                size={size}
-                style={{ background: FIGMA.heading, color: '#FFFFFF', fontSize: size * 0.4 }}
-                aria-label={label}
-                role="img"
-            >
-                {initials(name)}
-            </Avatar>
+            <span role="img" aria-label={label} style={{ display: 'inline-flex' }}>
+                <Avatar
+                    aria-hidden
+                    size={size}
+                    style={{ background: FIGMA.heading, color: '#FFFFFF', fontSize: size * 0.4 }}
+                >
+                    {initials(name)}
+                </Avatar>
+            </span>
         </Tooltip>
     );
 }
@@ -166,7 +185,10 @@ export function ProblemAlert({ error, onRetry }: { error: unknown; onRetry?: () 
                 <>
                     {p.detail ?? (error instanceof Error ? error.message : 'Please try again.')}
                     {p.request_id && (
-                        <Typography.Text type="secondary"> (request {p.request_id})</Typography.Text>
+                        <Typography.Text type="secondary">
+                            {' '}
+                            (request {p.request_id})
+                        </Typography.Text>
                     )}
                 </>
             }

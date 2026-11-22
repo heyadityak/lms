@@ -24,6 +24,12 @@ final class Modules
         return in_array($module->value, $this->enabled, true);
     }
 
+    /** Drop the per-request memo after an admin write so the same instance sees the new row (D-27). */
+    public function flush(): void
+    {
+        $this->enabled = null;
+    }
+
     /** @return list<string> */
     public function licensed(): array
     {

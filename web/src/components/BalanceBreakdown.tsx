@@ -23,7 +23,10 @@ export function BalanceBreakdown({
                     <tbody>
                         {balances.map((b) => (
                             <tr key={b.leave_type.id}>
-                                <th scope="row" style={{ textAlign: 'left', paddingRight: 16, fontWeight: 400 }}>
+                                <th
+                                    scope="row"
+                                    style={{ textAlign: 'left', paddingRight: 16, fontWeight: 400 }}
+                                >
                                     {b.leave_type.name}
                                 </th>
                                 <td style={{ textAlign: 'right' }}>{b[field]}</td>
@@ -33,10 +36,17 @@ export function BalanceBreakdown({
                 </table>
             }
         >
-            <Button type="text" size="small" icon={<InfoCircleOutlined />} aria-label={`${label} per leave type`} />
+            <Button
+                type="text"
+                size="small"
+                icon={<InfoCircleOutlined />}
+                aria-label={`${label} per leave type`}
+            />
         </Popover>
     );
 }
 
-export const sum = (balances: Schemas['Balance'][] | undefined, field: 'available' | 'used' | 'entitled') =>
-    (balances ?? []).reduce((n, b) => n + b[field], 0);
+export const sum = (
+    balances: Schemas['Balance'][] | undefined,
+    field: 'available' | 'used' | 'entitled',
+) => (balances ?? []).reduce((n, b) => n + b[field], 0);

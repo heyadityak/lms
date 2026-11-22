@@ -1,7 +1,7 @@
-import { Placeholder } from '@/components/Placeholder';
+import { LeavesView } from '@/components/LeavesView';
 
 export const metadata = { title: 'Leaves' };
 
 export default function LeavesPage() {
-    return <Placeholder title="Leaves" />;
+    return <LeavesView />;
 }

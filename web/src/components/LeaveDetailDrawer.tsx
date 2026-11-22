@@ -46,16 +46,32 @@ export function LeaveDetailDrawer({ id, onClose }: { id: string | null; onClose:
                             { key: 'to', label: 'To', children: fmtDate(r.end_date) },
                             { key: 'part', label: 'Day part', children: DAY_PART[r.day_part] },
                             { key: 'days', label: 'Days', children: fmtDays(r.days) },
-                            { key: 'status', label: 'Status', children: <StatusTag status={r.status} /> },
+                            {
+                                key: 'status',
+                                label: 'Status',
+                                children: <StatusTag status={r.status} />,
+                            },
                             { key: 'reason', label: 'Reason', children: r.reason },
                             ...(r.handover_note
-                                ? [{ key: 'handover', label: 'Handover note', children: r.handover_note }]
+                                ? [
+                                      {
+                                          key: 'handover',
+                                          label: 'Handover note',
+                                          children: r.handover_note,
+                                      },
+                                  ]
                                 : []),
                             ...(r.decided_by
                                 ? [{ key: 'by', label: 'Decided by', children: r.decided_by.name }]
                                 : []),
                             ...(r.decision_comment
-                                ? [{ key: 'comment', label: 'Comment', children: r.decision_comment }]
+                                ? [
+                                      {
+                                          key: 'comment',
+                                          label: 'Comment',
+                                          children: r.decision_comment,
+                                      },
+                                  ]
                                 : []),
                         ]}
                     />

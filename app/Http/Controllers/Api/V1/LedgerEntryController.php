@@ -51,7 +51,7 @@ final class LedgerEntryController
             ->where('year', (int) ($filter['year'] ?? LeaveYear::current()))
             ->when(isset($filter['leave_type']), fn (Builder $q) => $q->whereHas('leaveType', fn (Builder $t) => $t->where('public_id', $filter['leave_type'])))
             ->with(['leaveType', 'leaveRequest', 'actor'])
-            ->orderByDesc('id');
+            ->orderBy('id'); // LedgerEntryList: oldest first
 
         return LedgerEntryResource::page($query->paginate((int) $request->validated('page.size', 25), ['*'], 'page[number]', (int) $request->validated('page.number', 1)), $request);
     }

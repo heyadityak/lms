@@ -1,7 +1,19 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Checkbox, DatePicker, Form, Input, Modal, Radio, Space, Spin } from 'antd';
+import {
+    Alert,
+    App,
+    Button,
+    Checkbox,
+    DatePicker,
+    Form,
+    Input,
+    Modal,
+    Radio,
+    Space,
+    Spin,
+} from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
@@ -42,7 +54,9 @@ function toBody(v: Values, forPreview = false): Body | null {
         end_date: to.format('YYYY-MM-DD'),
         day_part: v.half_day ? (v.day_part ?? 'first_half') : 'full',
         reason: forPreview && reason.length < 3 ? PREVIEW_REASON : reason,
-        ...(!forPreview && v.handover_note?.trim() ? { handover_note: v.handover_note.trim() } : {}),
+        ...(!forPreview && v.handover_note?.trim()
+            ? { handover_note: v.handover_note.trim() }
+            : {}),
     };
 }
 
@@ -104,7 +118,10 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
     }, [halfDay, halfDayAllowed, form]);
 
     const previewBody = useDebounced(
-        toBody({ leave_type_id: typeId, dates, half_day: halfDay, day_part: dayPart, reason }, true),
+        toBody(
+            { leave_type_id: typeId, dates, half_day: halfDay, day_part: dayPart, reason },
+            true,
+        ),
         300,
     );
     const preview = useQuery({
@@ -133,7 +150,8 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
         // Same body → same key, so a retry after a lost response is not a second request.
         // A changed body needs a new key (the server pins the key to the first body, incl. 422s).
         const json = JSON.stringify(body);
-        if (attempt.current?.body !== json) attempt.current = { body: json, key: crypto.randomUUID() };
+        if (attempt.current?.body !== json)
+            attempt.current = { body: json, key: crypto.randomUUID() };
         setSubmitError(null);
         try {
             await submit.mutateAsync({ body, key: attempt.current.key });
@@ -157,7 +175,12 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
     const p = preview.data;
 
     if (types.isPending) return <Spin style={{ display: 'block', padding: 48 }} />;
-    if (types.isError) return <div style={{ padding: 24 }}><ProblemAlert error={types.error} /></div>;
+    if (types.isError)
+        return (
+            <div style={{ padding: 24 }}>
+                <ProblemAlert error={types.error} />
+            </div>
+        );
 
     return (
         <Form<Values>
@@ -166,7 +189,7 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
             layout="horizontal"
             labelCol={{ xs: { span: 24 }, sm: { flex: '130px' } }}
             wrapperCol={{ xs: { span: 24 }, sm: { flex: 1 } }}
-            labelAlign="left"
+            labelAlign="start"
             colon
             requiredMark={false}
         >
@@ -176,7 +199,9 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                     label="Leave type"
                     rules={[{ required: true, message: 'Choose a leave type' }]}
                 >
-                    <Radio.Group options={types.data.map((t) => ({ value: t.id, label: t.name }))} />
+                    <Radio.Group
+                        options={types.data.map((t) => ({ value: t.id, label: t.name }))}
+                    />
                 </Form.Item>
                 <Form.Item
                     name="dates"
@@ -225,7 +250,9 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                                 </span>
                             </Space>
                         ) : (
-                            <span style={{ color: FIGMA.text }}>Pick dates to see the day count</span>
+                            <span style={{ color: FIGMA.text }}>
+                                Pick dates to see the day count
+                            </span>
                         )}
                     </div>
                 </Form.Item>
@@ -242,7 +269,12 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                         { min: 3, message: 'At least 3 characters' },
                     ]}
                 >
-                    <Input.TextArea maxLength={1000} showCount rows={3} placeholder="e.g. Family trip" />
+                    <Input.TextArea
+                        maxLength={1000}
+                        showCount
+                        rows={3}
+                        placeholder="e.g. Family trip"
+                    />
                 </Form.Item>
                 <Form.Item name="handover_note" label="Handover note">
                     <Input.TextArea maxLength={2000} rows={2} placeholder="Optional" />
@@ -262,12 +294,22 @@ function ApplyLeaveForm({ onDone }: { onDone: () => void }) {
                     gap: 24,
                 }}
             >
-                <Button type="primary" htmlType="submit" loading={submit.isPending} style={{ minWidth: 88 }}>
+                <Button
+                    type="primary"
+                    htmlType="submit"
+                    loading={submit.isPending}
+                    style={{ minWidth: 88 }}
+                >
                     Apply
                 </Button>
                 <Button
                     onClick={onDone}
-                    style={{ minWidth: 88, borderColor: FIGMA.navy, color: FIGMA.navy, borderWidth: 1.5 }}
+                    style={{
+                        minWidth: 88,
+                        borderColor: FIGMA.navy,
+                        color: FIGMA.navy,
+                        borderWidth: 1.5,
+                    }}
                 >
                     Cancel
                 </Button>

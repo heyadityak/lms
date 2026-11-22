@@ -10,7 +10,7 @@ use Illuminate\Auth\Access\Response;
 
 /**
  * HR side of users (UC-H2, UC-H5, UC-M4). Coarse x-roles first (403), then visibility: a user the caller may not see
- * is a 404 (D-46). Identity admin (`admin`, phase 15) is separate.
+ * is a 404 (D-46). Identity admin (UC-U*, role `admin`) is `manageIdentity`, separate from HR field edits.
  */
 final class UserPolicy
 {
@@ -56,5 +56,11 @@ final class UserPolicy
     public function adjustBalance(User $actor): bool
     {
         return $actor->role === Role::HrAdmin;
+    }
+
+    /** UC-U1–U6. The additive realm role `admin` only (D-29). Guardrails G2–G3 stay in UserAdminGuard. */
+    public function manageIdentity(User $actor): bool
+    {
+        return $actor->is_admin === true;
     }
 }

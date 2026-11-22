@@ -44,3 +44,11 @@ export async function unwrap<T>(
     }
     return data;
 }
+
+/** Success with an empty body (204). `unwrap` treats a missing body as failure. */
+export async function unwrapEmpty(
+    call: Promise<{ data?: unknown; error?: unknown; response: Response }>,
+): Promise<void> {
+    const { error, response } = await call;
+    if (!response.ok) throw new ApiError(response.status, (error ?? {}) as Problem);
+}

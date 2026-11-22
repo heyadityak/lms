@@ -69,7 +69,9 @@ export function CarouselCard({
                     ) : pages.length ? (
                         pages[i]
                     ) : (
-                        <p style={{ color: FIGMA.text, textAlign: 'center', margin: '24px 0' }}>{empty}</p>
+                        <p style={{ color: FIGMA.text, textAlign: 'center', margin: '24px 0' }}>
+                            {empty}
+                        </p>
                     )}
                 </div>
             </section>

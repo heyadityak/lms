@@ -19,12 +19,12 @@ import {
     type TableColumnsType,
 } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { ApiError, browserApi as api, unwrap, type Schemas } from '@/lib/api/client';
 import { useBalances, useLeaveTypes, useMyPendingCount } from '@/lib/queries';
 import { useTableQuery } from '@/lib/table';
 import { ApplyLeaveModal } from './ApplyLeaveModal';
-import { BalanceBreakdown, sum } from './BalanceBreakdown';
 import { CommentModal } from './CommentModal';
 import { LeaveDetailDrawer } from './LeaveDetailDrawer';
 import { useShell } from './providers';
@@ -32,6 +32,18 @@ import { PageTitle, ProblemAlert, STATUS_LABEL, StatCard, StatusTag, fmtDate } f
 
 type LeaveRequest = Schemas['LeaveRequest'];
 type Status = Schemas['LeaveStatus'];
+
+/** S3: one card per tracked type. Missing `tracks_balance` means the row is shown. */
+function tracksBalance(
+    row: Schemas['Balance'],
+    leaveTypes: readonly Schemas['LeaveType'][] | undefined,
+): boolean {
+    const onRow = (row as { tracks_balance?: boolean }).tracks_balance;
+    if (onRow === false) return false;
+    const type = leaveTypes?.find((t) => t.id === row.leave_type.id);
+    if (type && type.tracks_balance === false) return false;
+    return true;
+}
 
 interface Filters {
     status?: Status[];
@@ -41,17 +53,23 @@ interface Filters {
 
 /** Owner may cancel pending, or approved before it starts (USE_CASES; the server decides). */
 const cancellable = (r: LeaveRequest) =>
-    r.status === 'pending' || (r.status === 'approved' && dayjs(r.start_date).isAfter(dayjs(), 'day'));
+    r.status === 'pending' ||
+    (r.status === 'approved' && dayjs(r.start_date).isAfter(dayjs(), 'day'));
 
-/** Leaves (Figma 484:925): stats, Apply, filters, my requests table, cancel, detail drawer. */
-export function LeavesView() {
+/**
+ * Leaves (Figma 484:925): stats, Apply, filters, my requests table, cancel, detail drawer.
+ * `applyOpen` is the `/leave-requests/new` deep link. The button on this page opens the
+ * modal in place so filters survive.
+ */
+export function LeavesView({ applyOpen = false }: { applyOpen?: boolean }) {
     const { user } = useShell();
     const { message } = App.useApp();
+    const router = useRouter();
     const queryClient = useQueryClient();
     const table = useTableQuery('-start_date');
     const [filters, setFilters] = useState<Filters>({});
     const [filterOpen, setFilterOpen] = useState(false);
-    const [applyOpen, setApplyOpen] = useState(false);
+    const [applyLocal, setApplyLocal] = useState(false);
     const [detail, setDetail] = useState<string | null>(null);
     const [cancelling, setCancelling] = useState<LeaveRequest | null>(null);
     const [filterForm] = Form.useForm<Filters>();
@@ -72,9 +90,11 @@ export function LeavesView() {
         queryFn: () => unwrap(api.GET('/leave-requests', { params: { query } })),
         placeholderData: keepPreviousData,
     });
-    const activeFilters = [filters.status?.length, filters.leave_type, filters.range?.[0] || filters.range?.[1]].filter(
-        Boolean,
-    ).length;
+    const activeFilters = [
+        filters.status?.length,
+        filters.leave_type,
+        filters.range?.[0] || filters.range?.[1],
+    ].filter(Boolean).length;
 
     const cancel = async (comment: string | null) => {
         if (!cancelling) return;
@@ -98,7 +118,7 @@ export function LeavesView() {
         await queryClient.invalidateQueries();
     };
 
-    const b = balances.data?.data ?? [];
+    const tracked = (balances.data?.data ?? []).filter((row) => tracksBalance(row, types.data));
     const columns: TableColumnsType<LeaveRequest> = [
         { title: 'Leave type', key: 'type', render: (_, r) => r.leave_type.name },
         {
@@ -146,36 +166,22 @@ export function LeavesView() {
         <>
             <PageTitle>Leaves</PageTitle>
             <Row gutter={[30, 30]} style={{ marginBottom: 30 }}>
-                <Col xs={24} sm={12} xl={6}>
-                    <StatCard
-                        compact
-                        tone="success"
-                        value={sum(b, 'available')}
-                        title="Available Leaves"
-                        loading={balances.isPending}
-                        action={<BalanceBreakdown balances={b} field="available" label="Available" />}
-                    />
-                </Col>
-                <Col xs={24} sm={12} xl={6}>
-                    <StatCard
-                        compact
-                        tone="neutral"
-                        value={sum(b, 'entitled')}
-                        title="Entitled this year"
-                        loading={balances.isPending}
-                        action={<BalanceBreakdown balances={b} field="entitled" label="Entitled" />}
-                    />
-                </Col>
-                <Col xs={24} sm={12} xl={6}>
-                    <StatCard
-                        compact
-                        tone="danger"
-                        value={sum(b, 'used')}
-                        title="Used this year"
-                        loading={balances.isPending}
-                        action={<BalanceBreakdown balances={b} field="used" label="Used" />}
-                    />
-                </Col>
+                {balances.isPending ? (
+                    <Col xs={24} sm={12} xl={6}>
+                        <StatCard compact tone="success" value="" title="" loading />
+                    </Col>
+                ) : (
+                    tracked.map((row) => (
+                        <Col key={row.leave_type.id} xs={24} sm={12} xl={6}>
+                            <StatCard
+                                compact
+                                tone="success"
+                                value={row.available}
+                                title={row.leave_type.name}
+                            />
+                        </Col>
+                    ))
+                )}
                 <Col xs={24} sm={12} xl={6}>
                     <StatCard
                         compact
@@ -186,10 +192,12 @@ export function LeavesView() {
                     />
                 </Col>
             </Row>
-            {balances.isError && <ProblemAlert error={balances.error} onRetry={() => balances.refetch()} />}
+            {balances.isError && (
+                <ProblemAlert error={balances.error} onRetry={() => balances.refetch()} />
+            )}
 
             <Space style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 24 }}>
-                <Button type="primary" onClick={() => setApplyOpen(true)}>
+                <Button type="primary" onClick={() => setApplyLocal(true)}>
                     Apply Leave
                 </Button>
                 <Badge count={activeFilters} size="small">
@@ -224,7 +232,12 @@ export function LeavesView() {
                 })}
             />
 
-            <Drawer open={filterOpen} onClose={() => setFilterOpen(false)} title="Filter leaves" size={360}>
+            <Drawer
+                open={filterOpen}
+                onClose={() => setFilterOpen(false)}
+                title="Filter leaves"
+                size={360}
+            >
                 <Form<Filters>
                     form={filterForm}
                     layout="vertical"
@@ -247,11 +260,18 @@ export function LeavesView() {
                         <Select
                             allowClear
                             placeholder="All types"
-                            options={(types.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
+                            options={(types.data ?? []).map((t) => ({
+                                value: t.id,
+                                label: t.name,
+                            }))}
                         />
                     </Form.Item>
                     <Form.Item name="range" label="Dates (overlapping)" extra="Format YYYY-MM-DD">
-                        <DatePicker.RangePicker format="YYYY-MM-DD" allowEmpty={[true, true]} style={{ width: '100%' }} />
+                        <DatePicker.RangePicker
+                            format="YYYY-MM-DD"
+                            allowEmpty={[true, true]}
+                            style={{ width: '100%' }}
+                        />
                     </Form.Item>
                     <Space>
                         <Button type="primary" htmlType="submit">
@@ -260,7 +280,11 @@ export function LeavesView() {
                         <Button
                             onClick={() => {
                                 filterForm.resetFields();
-                                filterForm.setFieldsValue({ status: [], leave_type: undefined, range: null });
+                                filterForm.setFieldsValue({
+                                    status: [],
+                                    leave_type: undefined,
+                                    range: null,
+                                });
                                 filterForm.submit();
                             }}
                         >
@@ -270,7 +294,13 @@ export function LeavesView() {
                 </Form>
             </Drawer>
 
-            <ApplyLeaveModal open={applyOpen} onClose={() => setApplyOpen(false)} />
+            <ApplyLeaveModal
+                open={applyOpen || applyLocal}
+                onClose={() => {
+                    setApplyLocal(false);
+                    if (applyOpen) router.replace('/leave-requests');
+                }}
+            />
             <LeaveDetailDrawer id={detail} onClose={() => setDetail(null)} />
             <CommentModal
                 open={cancelling !== null}

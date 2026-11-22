@@ -4,31 +4,61 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1;
 
-use App\Support\Brand;
-use App\Support\Modules;
+use App\Actions\Settings\DeleteBrandingAsset;
+use App\Actions\Settings\ResetBranding;
+use App\Actions\Settings\UpdateBranding;
+use App\Http\Requests\UpdateBrandingRequest;
+use App\Http\Requests\UploadBrandingAssetRequest;
+use App\Http\Resources\BrandingSettingsResource;
+use App\Models\Setting;
 use App\Support\Settings;
 use Illuminate\Http\JsonResponse;
-use stdClass;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 
-/** GET /api/v1/branding (`getPublicBranding`, D-43): public, no auth, not module-gated; enabled module keys only. */
+/** UC-B1–B4, UC-B6. Writes are role `admin`. GET is any authenticated user. */
 final class BrandingController
 {
-    public function show(Settings $settings, Modules $modules): JsonResponse
+    public function show(Settings $settings): JsonResponse
     {
-        $brand = Brand::fromSettings($settings);
+        Gate::authorize('viewBranding', Setting::class);
 
-        return response()->json([
-            'data' => [
-                'name' => $brand->name,
-                'primary_color' => $brand->primary,
-                'accent_color' => $brand->accent,
-                'primary_contrast' => $brand->contrast,
-                'logo_url' => $brand->logoUrl,
-                'favicon_url' => $brand->faviconUrl,
-                'modules' => array_keys(array_filter($modules->all(), fn (array $row): bool => $row['enabled'])),
-            ],
-            'meta' => new stdClass,
-            'links' => new stdClass,
-        ])->header('Cache-Control', 'public, max-age=30');
+        return BrandingSettingsResource::response($settings);
+    }
+
+    public function update(UpdateBrandingRequest $request, UpdateBranding $action, Settings $settings): JsonResponse
+    {
+        $action->handle($request->validated(), null, null, $request->user());
+
+        return BrandingSettingsResource::response($settings);
+    }
+
+    public function reset(Request $request, ResetBranding $action, Settings $settings): JsonResponse
+    {
+        Gate::authorize('manageBranding', Setting::class);
+        $action->handle($request->user());
+
+        return BrandingSettingsResource::response($settings);
+    }
+
+    public function upload(UploadBrandingAssetRequest $request, string $asset, UpdateBranding $action, Settings $settings): JsonResponse
+    {
+        $file = $request->file('file');
+        $action->handle(
+            [],
+            $asset === 'logo' ? $file : null,
+            $asset === 'favicon' ? $file : null,
+            $request->user(),
+        );
+
+        return BrandingSettingsResource::response($settings);
+    }
+
+    public function destroy(string $asset, DeleteBrandingAsset $action, Settings $settings): JsonResponse
+    {
+        Gate::authorize('manageBranding', Setting::class);
+        $action->handle($asset);
+
+        return BrandingSettingsResource::response($settings);
     }
 }

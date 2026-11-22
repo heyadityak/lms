@@ -19,7 +19,7 @@ Small phases. Each phase: one agent run → verified (tests green in Docker) →
 | 13 | domain | **HR admin API only** (no pages): departments, leave types CRUD, holidays CRUD, users LMS fields + deactivate/activate, balance adjustments, reports JSON/CSV, notifications (mail deep links = `APP_URL` + Next paths), year-start accrual. Matches openapi.yaml. Can run in parallel with 9–12. | done |
 | 14 | frontend | **HR screens:** users (HR fields, adjustments, deactivate), departments, leave types, holidays admin, reports (CSV download through the BFF), working week, team page. | done |
 | 15 | domain | **Admin API only:** branding PATCH/DELETE + asset upload/delete, modules list/patch (`api` may be disabled), working-week PATCH, Keycloak user management (guardrails, audit, compensation, 503 `IDP_UNAVAILABLE`). | done |
-| 16 | frontend | **Admin screens:** branding (ColorPicker, Upload, contrast warning, `revalidateTag('branding')`), modules (Switch, locked), identity users (list/create/edit/roles/enable/disable/password reset, 503 page). | todo |
+| 16 | frontend | **Admin screens:** branding (ColorPicker, Upload, contrast warning, `revalidateTag('branding')`), modules (Switch, locked), identity users (list/create/edit/roles/enable/disable/password reset, 503 page). | done |
 | 17 | qa | **Full regression + e2e:** PHPUnit for phases 8, 11, 13, 15 (spec-validated); Playwright `web/e2e` (alice applies → bob approves → balance; module off → nav hidden + 404; branding name/colour/favicon; axe on every page) wired into the package smoke job; bug loop until green. | todo |
 
 Notes (D-43, 2026-11-19):

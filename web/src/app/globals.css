@@ -6,6 +6,60 @@
     outline-offset: -4px;
 }
 
+/* Admin section nav. Colours are set on the element from the shell tokens. */
+.lms-admin-subnav ul {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 4px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.lms-admin-subnav li {
+    display: flex;
+}
+
+.lms-admin-subnav a {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-height: 48px;
+    padding: 8px 12px;
+    border-radius: 4px 4px 0 0;
+    color: var(--lms-subnav-text, #44477b);
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 22px;
+    text-decoration: none;
+}
+
+.lms-admin-subnav a:hover {
+    color: var(--lms-subnav-accent, #3a5fbe);
+}
+
+.lms-admin-subnav a[aria-current='page'] {
+    color: var(--lms-subnav-accent, #3a5fbe);
+    font-weight: 700;
+    background: var(--lms-subnav-accent-bg, #e8eef8);
+}
+
+.lms-admin-subnav a[aria-current='page']::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    background: var(--lms-subnav-accent, #3a5fbe);
+}
+
+.lms-admin-subnav a:focus-visible {
+    outline: 2px solid var(--lms-subnav-accent, #3a5fbe);
+    outline-offset: -2px;
+}
+
 .lms-table-row {
     cursor: pointer;
 }

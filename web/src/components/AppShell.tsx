@@ -149,28 +149,46 @@ function NavLinks({
     );
 }
 
-/** Sibling admin routes, visible once an admin page is open. */
-function AdminSubnav({ items, current }: { items: NavItem[]; current?: string }) {
+/** Section links under the header. Same items the Admin menu already computed. */
+function AdminSubnav({
+    items,
+    current,
+    mobile,
+}: {
+    items: NavItem[];
+    current?: string;
+    mobile: boolean;
+}) {
+    const { token } = theme.useToken();
     return (
-        <nav aria-label="Admin" style={{ marginBottom: 8 }}>
-            <Space wrap size="middle">
+        <nav
+            aria-label="Admin"
+            className="lms-admin-subnav"
+            style={
+                {
+                    '--lms-subnav-accent': token.colorPrimary,
+                    '--lms-subnav-accent-bg': token.colorPrimaryBg,
+                    '--lms-subnav-text': FIGMA.heading,
+                    margin: mobile ? '-16px -16px 16px' : '-30px -33px 24px',
+                    paddingInline: mobile ? 16 : 33,
+                    background: '#FFFFFF',
+                    borderBottom: `1px solid ${FIGMA.border}`,
+                    fontFamily: token.fontFamily,
+                } as CSSProperties
+            }
+        >
+            <ul>
                 {items.map((item) => {
                     const on = item.key === current;
                     return (
-                        <Link
-                            key={item.key}
-                            href={item.key}
-                            aria-current={on ? 'page' : undefined}
-                            style={{
-                                fontWeight: on ? 700 : 400,
-                                textDecoration: on ? 'underline' : 'none',
-                            }}
-                        >
-                            {item.label}
-                        </Link>
+                        <li key={item.key}>
+                            <Link href={item.key} aria-current={on ? 'page' : undefined}>
+                                {item.label}
+                            </Link>
+                        </li>
                     );
                 })}
-            </Space>
+            </ul>
         </nav>
     );
 }
@@ -314,7 +332,7 @@ function Shell({
                     }}
                 >
                     {pathname.startsWith('/admin') && admin?.children && (
-                        <AdminSubnav items={admin.children} current={key} />
+                        <AdminSubnav items={admin.children} current={key} mobile={mobile} />
                     )}
                     <main>{children}</main>
                 </Layout.Content>

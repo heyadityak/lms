@@ -20,7 +20,8 @@ Read this first, then `decisions.md`, then the docs it points to.
 - 2026-11-19 (phases 8–11): API-only Laravel (D-47), Next.js BFF scaffold (D-48), nginx/web/CI wiring (D-50), `POST /leave-requests/preview` via `LeaveRequestValidator` (D-49). Commit `334a81e` also landed unfinished phase 12/13 code.
 - 2026-11-22 (phases 12–13): Core leave screens wired (dashboard, leaves with one card per tracked type, apply modal + `/leave-requests/new`, detail drawer, approvals, holidays). Vitest 30. HR admin API proven: UC-H1–H5, H7–H9, UC-S1, UC-S2; ledger lists oldest-first; PHPUnit 180, pint clean. Class diagram includes `LeaveRequestValidator`. D-51: Team Time Off uses Sat/Sun until phase 15. Browser check of phase 12 passed (alice and bob).
 - 2026-11-22 (phase 14): HR screens at `/admin/users`, `/admin/departments`, `/admin/leave-types`, `/admin/holidays`, `/admin/reports`, `/admin/settings/working-week`. Vitest 39. Empty weekend (`[]`) is a 7-day working week, matching D-30. Branding, modules, and identity users are phase 16.
-- 2026-11-22 (phase 15): Admin API done. UC-H16, UC-B1–B6, UC-U1–U6. PHPUnit 187, pint clean. Public branding is `PublicBrandingController`. Open for architect: `/admin/users` list/detail are not audited (CHECK constraint only allows mutations); Keycloak users with no email or no base role are omitted from the admin list while `total` stays the Keycloak count. Next: phase 16 (admin screens). Open: Figma license; `GET /leave-types` 422 is not in the spec. Dashboard Team Time Off now reads `weekend_days` from `GET /settings/working-week` (falls back to Sat/Sun while that request is loading or failing).
+- 2026-11-22 (phase 15): Admin API done. UC-H16, UC-B1–B6, UC-U1–U6. PHPUnit 187, pint clean. Public branding is `PublicBrandingController`. Open for architect: `/admin/users` list/detail are not audited (CHECK constraint only allows mutations); Keycloak users with no email or no base role are omitted from the admin list while `total` stays the Keycloak count. Dashboard Team Time Off now reads `weekend_days` from `GET /settings/working-week` (falls back to Sat/Sun while that request is loading or failing).
+- 2026-11-22 (phase 16): Admin screens at `/admin/settings/branding`, `/admin/settings/modules`, `/admin/identity-users`. Vitest 51. `revalidateTag('branding')` after branding writes. Next: phase 17 (QA regression + Playwright). Open: Figma license; `GET /leave-types` 422 is not in the spec.
 
 ## Run logs
 | Date | Agent | File | Summary |
@@ -49,6 +50,7 @@ Read this first, then `decisions.md`, then the docs it points to.
 | 2026-11-22 | orchestrator | [2026-11-22-orchestrator.md](2026-11-22-orchestrator.md) | Closed phases 12–13, D-51, browser check alice + bob on the compose stack. |
 | 2026-11-22 | frontend | [2026-11-22-phase14-frontend.md](2026-11-22-phase14-frontend.md) | Phase 14: HR screens (users, departments, leave types, holidays, reports, working week). Vitest 39. |
 | 2026-11-22 | domain | [2026-11-22-phase15-domain.md](2026-11-22-phase15-domain.md) | Phase 15: working week, branding, modules, Keycloak user admin. 187 tests. |
+| 2026-11-22 | frontend | [2026-11-22-phase16-frontend.md](2026-11-22-phase16-frontend.md) | Phase 16: branding, modules, and identity-user screens. Vitest 51. |
 
 ## Open questions (awaiting user)
 1. ~~Leave year~~ Resolved by D-26 (`LEAVE_YEAR_START_MONTH`, default 1). Confirm env-only (not admin-editable) is acceptable.

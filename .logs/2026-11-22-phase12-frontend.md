@@ -61,6 +61,7 @@ D-51's dashboard half is now done. Team Time Off passes `useWorkingWeek().weeken
 - Team Time Off requests one page of 100 (API max). If `meta.total` is higher, the card says how many were omitted.
 - ~~S3 keeps the existing summed Available / Entitled / Used cards plus the per-type popover, not one card per leave type. Say if that should change.~~ Done: one available card per tracked type, plus Pending.
 - `Placeholder.tsx` has no callers.
+- Holiday calendar selected the 1st because `cursor` started at `dayjs().startOf('month')`. Fixed: initial value is today. `HolidaysView.test.tsx` asserts the selected cell title is today. Live check on `/holidays` (2026-11-22): selected cell `2026-11-22`, 1 Nov not selected.
 
 ## Next steps
 Screens done for phase 12: Dashboard, Leaves, Apply (modal + `/leave-requests/new`), request detail drawer, Approvals, Holidays. Approvals and Holidays still 404 for the wrong role / module off.
